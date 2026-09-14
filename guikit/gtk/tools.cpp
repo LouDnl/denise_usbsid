@@ -193,7 +193,11 @@ auto pSystem::sleep(unsigned milliSeconds) -> void {
 
 auto pSystem::getOSLang() -> System::Language {
     
-    auto result = setlocale(LC_ALL, NULL);
+    // don't use LC_ALL here: as soon as one category differs (LC_NUMERIC is set to "C"),
+    // setlocale returns a composite string which lists all category names, and
+    // "LC_IDENTIFICATION" contains "de" leading to a wrong german detection.
+    // a single category always returns the plain locale name, e.g. "fr_FR.UTF-8"
+    auto result = setlocale(LC_MESSAGES, NULL);
     
     std::string str = result;
     
