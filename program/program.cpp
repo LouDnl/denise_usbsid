@@ -159,6 +159,10 @@ auto Program::finishStartup() -> void {
     Socket::init();
     if (cmd->binaryMonitor) {
         binaryMonitor.setServer( cmd->binaryMonitorAddress );
+        if (cmd->initbreak) {
+            if (binaryMonitor.checkForClientToAccept(1000))
+                binaryMonitor.initBreak();
+        }
     }
 
     if (!activeEmulator)
@@ -549,8 +553,15 @@ auto Program::loopUserInterface() -> void {
     emuThread->handleStatusUpdate();
     emuThread->handleUIEvents();
 
-    if (binaryMonitor.clientConnected()) {
-        binaryMonitor.update();
+    if (binaryMonitor.serverRunning()) {
+        if (!binaryMonitor.clientConnected()) {
+            if (binaryMonitor.checkForClientToAccept()) {
+                if (cmd->initbreak)
+                    binaryMonitor.initBreak();
+                binaryMonitor.update();
+            }
+        } else
+            binaryMonitor.update();
     }
 }
 

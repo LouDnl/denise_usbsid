@@ -106,7 +106,9 @@ struct BinaryMonitor {
 
     auto update() -> void;
 
-    auto waitForClientToAccept() -> void;
+    auto checkForClientToAccept(unsigned waitMs = 0) -> bool;
+
+    auto initBreak() -> void;
 
     auto destroy(Socket*& socket) -> void;
 
@@ -115,6 +117,8 @@ struct BinaryMonitor {
     auto handleCommand(uint8_t* buffer) -> void;
 
     auto sendResponse(uint32_t length, Type type, Error errorCode, uint32_t requestId, const uint8_t* body) -> void;
+
+    auto serverRunning() const -> bool { return server && server->connected(); }
 
     auto clientConnected() const -> bool { return client && client->connected(); }
 

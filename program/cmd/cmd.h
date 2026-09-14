@@ -47,6 +47,7 @@ struct Cmd {
 	bool ambiguousParam = false;
 
     bool binaryMonitor = false;
+	bool initbreak = false;
     std::string binaryMonitorAddress;
 
     auto parse() -> void;

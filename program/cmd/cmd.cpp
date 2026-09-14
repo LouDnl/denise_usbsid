@@ -193,6 +193,7 @@ auto Cmd::prepareOptions() -> void {
 
     options.push_back({"-binarymonitor", "Enable binary monitor", ""});
     options.push_back({"-binarymonitoraddress", "The local address the binary monitor should bind to", "<address>"});
+    options.push_back({"-initbreak", "Set an initial breakpoint for the monitor: reset", "<value>"});
 }
 
 auto Cmd::printInvalidParam() -> void {
@@ -238,7 +239,8 @@ auto Cmd::parse() -> void {
 	bool georamSizeNext = false;
     bool screenshotPathNext = false;
 	bool autostartPrgNext = false;
-    bool binaryMonitorNext = false;
+    bool binaryMonitorAdrNext = false;
+    bool initBreakNext = false;
 	bool fastTestbench = false;
     typedef Emulator::Interface EmuInt;
 	auto emuC64 = program->getEmulator("C64");
@@ -286,9 +288,15 @@ auto Cmd::parse() -> void {
             continue;
 		}
 
-        if (binaryMonitorNext) {
-            binaryMonitorNext = false;
+        if (binaryMonitorAdrNext) {
+            binaryMonitorAdrNext = false;
             binaryMonitorAddress = arg;
+            continue;
+        }
+
+        if (initBreakNext) {
+            initBreakNext = false;
+            initbreak = true;
             continue;
         }
 
@@ -356,7 +364,10 @@ auto Cmd::parse() -> void {
             autostartPrgNext = true;
         }
         else if (arg == "-binarymonitoraddress") {
-            binaryMonitorNext = true;
+            binaryMonitorAdrNext = true;
+        }
+        else if (arg == "-initbreak") {
+            initBreakNext = true;
         } else if (arg == "-attach8") {
             attachMedia = emuC64->getDisk(0);
             attachMedia->guid = (uintptr_t)emuC64;
