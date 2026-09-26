@@ -18,7 +18,7 @@ USBSIDPico::USBSIDPico(System& system) : system(system), sysTimer(system.sysTime
             this->sysTimer.add( &flush, rasterRate, Emulator::SystemTimer::UpdateExisting );
         } else {
             lastClock += cycles;
-            usbsid->USBSID_Flush();
+            usbsid->USBSID_SetFlush();
             this->sysTimer.add( &flush, rasterRate, Emulator::SystemTimer::UpdateExisting );
         }
     };
@@ -68,6 +68,7 @@ auto USBSIDPico::close() -> void {
         sysTimer.remove(&flush);
         usbsid->USBSID_Mute();
         delete usbsid;  /* Executes usbsid->USBSID_Close(); */
+        usbsid = nullptr;
     }
 #endif
 }
@@ -95,6 +96,10 @@ auto USBSIDPico::setDiffSize(unsigned value) -> void {
 
 auto USBSIDPico::store(uint8_t addr, uint8_t val, int chipNr) -> void {
 #ifdef LIBUSB
+    /* Board addresses 4 SIDs, 0x80+ aliases onto SID 1 */
+    if (chipNr > 3)
+        return;
+
     unsigned cycles = (sysTimer.clock - lastClock);
     cycles = ((cycles > 0) ? (cycles - 1) : cycles);
     if (usbsid)
@@ -105,11 +110,12 @@ auto USBSIDPico::store(uint8_t addr, uint8_t val, int chipNr) -> void {
 
 auto USBSIDPico::reset() -> void {
 #ifdef LIBUSB
-    if (usbsid)
+    if (usbsid) {
         usbsid->USBSID_ResetRingBuffer();
         usbsid->USBSID_ResetAllRegisters();
         usbsid->USBSID_Reset();
         usbsid->USBSID_UnMute();
+    }
 #endif
 }
 
