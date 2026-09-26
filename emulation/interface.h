@@ -65,10 +65,11 @@ struct Interface {
     };
     enum class ThreadPriority { Normal = 0, High = 1, Realtime = 2 };
     enum class LedId { Power, CapsLock, MHz2 };
+    enum RefreshOptions { REF_Normal = 0, REF_LACE_ODD = 1, REF_LACE_EVEN = 2, REF_HIRES = 4, REF_SHRES = 8 };
 
     std::string ident;
     
-	Interface( std::string ident ) {
+	Interface( const std::string& ident ) {
         this->ident = ident;        
     }
 
@@ -165,7 +166,6 @@ struct Interface {
 		MediaGroup* mediaGroupExpanded; // expanded expansion
         std::vector<PCBLayout> pcbs;
         std::vector<Jumper> jumpers;
-		std::vector<std::string> creationIdents; 
         enum Type : unsigned { Empty = 0, Standard = 1, Ram = 2, Eprom = 4, Flash = 8, TurboCart = 16,
             Freezer = 32, Battery = 64, RS232 = 128, Fastloader = 256, HDController = 512 };
         
@@ -184,20 +184,27 @@ struct Interface {
     std::vector<Expansion> expansions;
     
     struct Media {
+        enum class MemoryType { Magnetic, RAM, ROM, SRAM, FLASH, EEPROM, IP };
+
         unsigned id;
         std::string name;
         uintptr_t guid; //free to use
-        MediaGroup* group;        
+        MediaGroup* group;
+        MemoryType type;
         PCBLayout* pcbLayout;
-        bool secondary; // secondary memory on cartridges, like Eeprom besides Flash on Gmod2 or REU ROM besides RAM dump
+        Media* parent; // secondary/tertiary memory on cartridges
+
+        auto isWritable() const -> bool { return type == MemoryType::Magnetic
+            || type == MemoryType::SRAM
+            || type == MemoryType::FLASH
+            || type == MemoryType::EEPROM; }
     };   
 
     struct MediaGroup {
         unsigned id;
-        std::string name;        
+        std::string name;
 		enum class Type : unsigned { Disk, HardDisk, Tape, Expansion, Program } type;
         std::vector<std::string> suffix;
-        std::vector<std::string> creatable;
         Media* selected;
         Expansion* expansion;
         std::vector<Media> media;
@@ -262,6 +269,7 @@ struct Interface {
         Region region;
         double sampleRate;
         uint8_t sampleIntervall;
+        unsigned cyclesPerLine;
         double fps;
         bool stereoSound;
         auto isPal() -> bool { return region == Region::Pal; }
@@ -301,6 +309,7 @@ struct Interface {
     struct Data {
         uint8_t* ptr;
         unsigned size;
+        auto reset() -> void { ptr = nullptr; size = 0; }
     };
 
     struct Item {
@@ -382,7 +391,10 @@ struct Interface {
         virtual auto writeAssignedMedia(Media*, uint8_t*, unsigned) -> unsigned { return 0; }
 		virtual auto getFileNameFromMedia(Media*) -> std::string { return ""; }
         virtual auto unloadMedia(Media*) -> void {}
-        virtual auto truncateMedia(Media* ) -> bool { return false; }
+        virtual auto truncateMedia(Media*) -> bool { return false; }
+        virtual auto isArchivedMedia(Media*) -> bool { return false; }
+        virtual auto getFileFromArchive(Media*, unsigned) -> Data { return{nullptr, 0}; }
+        virtual auto getFileList(Media* media, const std::string& sub) -> std::vector<std::pair<unsigned, std::string>> { return {}; }
         virtual auto updateDeviceState(Media*, bool, unsigned, uint8_t, bool ) -> void {}
         virtual auto updateLedState(Emulator::Interface::LedId, uint8_t) -> void {}
         virtual auto log(std::string, bool) -> void {} //for debugging
@@ -451,12 +463,24 @@ struct Interface {
     auto truncateMedia(Media* media) -> bool {
         return bind->truncateMedia( media );
     }
+
+    auto isArchivedMedia(Media* media) -> bool {
+        return bind->isArchivedMedia( media );
+    }
+
+    auto getFileFromArchive(Media* media, unsigned id) -> Data {
+        return bind->getFileFromArchive(media, id);
+    }
+
+    auto getFileList(Media* media, const std::string& sub = "") -> std::vector<std::pair<unsigned, std::string>> {
+        return bind->getFileList( media, sub );
+    }
     
     auto updateDeviceState(Media* media, bool write, unsigned position, uint8_t LED, bool motorOff ) -> void {
         bind->updateDeviceState(media, write, position, LED, motorOff);
     }
 
-    auto updateLedState(Emulator::Interface::LedId ledId, uint8_t state) -> void {
+    auto updateLedState(LedId ledId, uint8_t state) -> void {
         bind->updateLedState(ledId, state);
     }
     
@@ -564,9 +588,8 @@ struct Interface {
     virtual auto ejectExpansionImage(Media* media) -> void {}
     virtual auto writeProtectExpansion(Media* media, bool state) -> void {}
     virtual auto isWriteProtectedExpansion(Media* media) -> bool { return false; }
-    virtual auto createExpansionImage(MediaGroup* group, unsigned& imageSize, uint8_t id = 0) -> uint8_t* { return nullptr; }
+    virtual auto createExpansionImage(Media* media, unsigned& imageSize) -> uint8_t* { return nullptr; }
     virtual auto isExpansionBootable() -> bool { return false; }
-	virtual auto hasExpansionSecondaryRom() -> bool { return false; }
     virtual auto isExpansionUnsupported() -> bool { return false; }
     
 	// program 

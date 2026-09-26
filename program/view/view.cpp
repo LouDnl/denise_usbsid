@@ -189,7 +189,7 @@ auto View::build() -> void {
 	
 	onContext = [this]() {
         emuThread->lock();
-        if ( program->couldDeviceBlockSecondMouseButton( ) ) {
+        if ( couldDeviceBlockSecondMouseButton( ) ) {
             emuThread->unlock();
             return false;
         }
@@ -646,8 +646,8 @@ auto View::updateRecentList(Emulator::Interface* emulator) -> void {
     
     bool clearFooter = false;
     unsigned i = 0;
-    for(auto& filePath : list) {
-        if (filePath.empty())
+    for(auto& fileIdent : list) {
+        if (fileIdent.path.empty())
             continue;
 
         if (i >= recentFile->getEntries())
@@ -659,6 +659,7 @@ auto View::updateRecentList(Emulator::Interface* emulator) -> void {
             item->onActivate = [this, item]() {
                 emuThread->lock();
                 autoloader->init({ GUIKIT::File::resolveRelativePath(item->filePath()) }, Autoloader::Mode::DragnDrop);
+                autoloader->setArchiveId( (int)item->state.fileId );
                 autoloader->loadFiles();
                 emuThread->unlock();
             };
@@ -671,8 +672,8 @@ auto View::updateRecentList(Emulator::Interface* emulator) -> void {
             recentSoftware->append(*item);
         }
 
-        sysMenu->recents[i]->setText(GUIKIT::String::getFileName(filePath));
-        sysMenu->recents[i]->setFilePath(filePath);
+        sysMenu->recents[i]->setText(fileIdent.file);
+        sysMenu->recents[i]->setFileIdent(fileIdent.path, fileIdent.id);
         i++;
     }
 
@@ -832,11 +833,6 @@ auto View::updateShader(Emulator::Interface* emulator) -> void {
 
         auto vManager = VideoManager::getInstance( sM.emulator );
         std::string loaded = vManager->getPresetPath();
-        if (vManager->crtMode != VideoManager::CrtMode::Gpu) {
-            sM.shaderFavourites[0].item->setChecked();
-            break;
-        }
-
         bool found = false;
 
         for(auto& fav : sM.shaderFavourites) {
@@ -860,7 +856,6 @@ auto View::buildShader() -> void {
         auto emulator = sM.emulator;
         auto settings = Program::getSettings(emulator);
 		auto vManager = VideoManager::getInstance( emulator );
-        bool shaderActive = vManager->crtMode == VideoManager::CrtMode::Gpu;
 
         std::string loaded = vManager->getPresetPath();
         sM.shaderFavourites.clear();
@@ -884,8 +879,8 @@ auto View::buildShader() -> void {
         items.push_back(noneItem);
 
         int i = 0;
-        while(1) {
-            std::string fav = settings->get<std::string>( "shader_fav_" + std::to_string(i), "");
+        while(true) {
+            auto fav = settings->get<std::string>( "shader_fav_" + std::to_string(i), "");
             fav = GUIKIT::File::resolveRelativePath(fav);
             if (fav.empty())
                 break;
@@ -916,7 +911,11 @@ auto View::buildShader() -> void {
                 if (emuView && emuView->presentationLayout)
                     emuView->presentationLayout->loadShader(shaderPath);
                 else {
-                    program->activateGPU(emulator, true);
+                    if (vManager->legacyCRTonCPU) {
+                        Program::getSettings(emulator)->set<bool>("video_crt_legacy", false);
+                        vManager->reloadSettings(true);
+                    }
+
                     vManager->loadPreset(shaderPath);
                 }
                 emuThread->unlock();
@@ -928,7 +927,7 @@ auto View::buildShader() -> void {
         sM.shaderFavourites.insert(sM.shaderFavourites.begin(), {"none", noneItem});
 
         GUIKIT::MenuRadioItem::setGroup(items);
-        if (checkedItem && shaderActive)
+        if (checkedItem)
             checkedItem->setChecked();
 
         for(auto child : sM.shaderMenu->childs)
@@ -967,94 +966,49 @@ auto View::togglePause() -> void {
 }
 
 auto View::loadImages() -> void {
-    #include "../../data/resource.h" // for win xp only 
-    	
     powerImage.loadPng((uint8_t*)Icons::power, sizeof(Icons::power));
-	powerImage.setResourceId( ID_POWER );
     freezeImage.loadPng((uint8_t*)Icons::freeze, sizeof(Icons::freeze));
-	freezeImage.setResourceId( ID_FREEZE );
     menuImage.loadPng((uint8_t*)Icons::menu, sizeof(Icons::menu));
-	menuImage.setResourceId( ID_MENU );
     firmwareImage.loadPng((uint8_t*)Icons::memory, sizeof(Icons::memory));
-	firmwareImage.setResourceId( ID_MEMORY );
     driveImage.loadPng((uint8_t*)Icons::drive, sizeof(Icons::drive));
-	driveImage.setResourceId( ID_DRIVE );
     swapperImage.loadPng((uint8_t*)Icons::swapper, sizeof(Icons::swapper));
-	swapperImage.setResourceId( ID_SWAPPER );
     scriptImage.loadPng((uint8_t*)Icons::script, sizeof(Icons::script));
-	scriptImage.setResourceId( ID_SCRIPT );
     systemImage.loadPng((uint8_t*)Icons::system, sizeof(Icons::system));
-	systemImage.setResourceId( ID_SYSTEM );
     joystickImage.loadPng((uint8_t*)Icons::joystick, sizeof(Icons::joystick));
-	joystickImage.setResourceId( ID_JOYSTICK );
     volumeImage.loadPng((uint8_t*)Icons::volume, sizeof(Icons::volume));
-	volumeImage.setResourceId( ID_VOLUME );
     plugImage.loadPng((uint8_t*)Icons::plug, sizeof(Icons::plug));
-	plugImage.setResourceId( ID_PLUG );
     displayImage.loadPng((uint8_t*)Icons::display, sizeof(Icons::display));
-	displayImage.setResourceId( ID_DISPLAY );
     toolsImage.loadPng((uint8_t*)Icons::tools, sizeof(Icons::tools));
-	toolsImage.setResourceId( ID_TOOLS );
 	quitImage.loadPng((uint8_t*)Icons::quit, sizeof(Icons::quit));
-	quitImage.setResourceId( ID_QUIT );
 	keyboardImage.loadPng((uint8_t*)Icons::keyboard, sizeof(Icons::keyboard));
-	keyboardImage.setResourceId( ID_KEYBOARD );
 	colorImage.loadPng((uint8_t*)Icons::color, sizeof(Icons::color));
-	colorImage.setResourceId( ID_COLOR );
 	tapeImage.loadPng((uint8_t*)Icons::tape, sizeof(Icons::tape));
-	tapeImage.setResourceId( ID_TAPE );
     paletteImage.loadPng((uint8_t*)Icons::palette, sizeof(Icons::palette));
-	paletteImage.setResourceId( ID_PALETTE );
     cropImage.loadPng((uint8_t*)Icons::crop, sizeof(Icons::crop));
-	cropImage.setResourceId( ID_CROP );
     playImage.loadPng((uint8_t*)Icons::play, sizeof(Icons::play));
-	playImage.setResourceId( ID_PLAY );
     playhiImage.loadPng((uint8_t*)Icons::playHi, sizeof(Icons::playHi));
-	playhiImage.setResourceId( ID_PLAYHI );
     stopImage.loadPng((uint8_t*)Icons::stop, sizeof(Icons::stop));
-	stopImage.setResourceId( ID_STOP );
     stophiImage.loadPng((uint8_t*)Icons::stopHi, sizeof(Icons::stopHi));
-	stophiImage.setResourceId( ID_STOPHI );
     recordImage.loadPng((uint8_t*)Icons::record, sizeof(Icons::record));
-	recordImage.setResourceId( ID_RECORD );
     recordhiImage.loadPng((uint8_t*)Icons::recordHi, sizeof(Icons::recordHi));
-	recordhiImage.setResourceId( ID_RECORDHI );
     forwardImage.loadPng((uint8_t*)Icons::forward, sizeof(Icons::forward));
-	forwardImage.setResourceId( ID_FORWARD );
     forwardhiImage.loadPng((uint8_t*)Icons::forwardHi, sizeof(Icons::forwardHi));
-	forwardhiImage.setResourceId( ID_FORWARDHI );
     rewindImage.loadPng((uint8_t*)Icons::rewind, sizeof(Icons::rewind));
-	rewindImage.setResourceId( ID_REWIND );
     rewindhiImage.loadPng((uint8_t*)Icons::rewindHi, sizeof(Icons::rewindHi));
-	rewindhiImage.setResourceId( ID_REWINDHI );
 	counterImage.loadPng((uint8_t*)Icons::counter, sizeof(Icons::counter));
-	counterImage.setResourceId( ID_COUNTER );
     diskImage.loadPng((uint8_t*) Icons::disk, sizeof (Icons::disk));
-	diskImage.setResourceId( ID_DISK );
 	editImage.loadPng((uint8_t*)Icons::edit, sizeof(Icons::edit));
-	editImage.setResourceId( ID_EDIT );
     ejectImage.loadPng((uint8_t*)Icons::eject, sizeof(Icons::eject));
-	ejectImage.setResourceId( ID_EJECT );
     fanImage.loadPng((uint8_t*)Icons::fan, sizeof(Icons::fan));
-    fanImage.setResourceId( ID_FAN );
     hideImage.loadPng((uint8_t*)Icons::hide, sizeof(Icons::hide));
-    hideImage.setResourceId( ID_HIDE );
     fullscreenImage.loadPng((uint8_t*)Icons::fullscreen, sizeof(Icons::fullscreen));
-    fullscreenImage.setResourceId( ID_FULLSCREEN );
     infoImage.loadPng((uint8_t*)Icons::info, sizeof(Icons::info));
-    infoImage.setResourceId( ID_INFO );
     gearsImage.loadPng((uint8_t*)Icons::gears, sizeof(Icons::gears));
-    gearsImage.setResourceId( ID_GEARS );
     delImage.loadPng((uint8_t*) Icons::del, sizeof (Icons::del));
-    delImage.setResourceId( ID_DEL );
     openImage.loadPng((uint8_t*)Icons::open, sizeof(Icons::open));
-    openImage.setResourceId(ID_OPEN);
     clearImage.loadPng((uint8_t*)Icons::clear, sizeof(Icons::clear));
-    clearImage.setResourceId(ID_CLEAR);
     insertImage.loadPng((uint8_t*)Icons::insert, sizeof(Icons::insert));
-    insertImage.setResourceId(ID_INSERT);
     screenshotImage.loadPng((uint8_t*)Icons::screenshot, sizeof(Icons::screenshot));
-    screenshotImage.setResourceId(ID_SCREENSHOT);
     debugImage.loadPng((uint8_t*)Icons::debug, sizeof(Icons::debug));
 
     playPauseStatusImage.loadPng((uint8_t*)Icons::playPauseStatus, sizeof(Icons::playPauseStatus));
@@ -1106,8 +1060,8 @@ auto View::buildMenu() -> void {
             sM.poweronAndRemoveExpansions->setIcon(powerImage);
             sM.poweronAndRemoveExpansions->onActivate = [emulator]() {
                 emuThread->lock(true);
+                MiscHelper::removeExpansion(emulator);
                 program->power(emulator);
-                MiscHelper::removeExpansion(false);
                 view->updateCartButtons( emulator );
                 emuThread->unlock();
             };
@@ -1649,7 +1603,7 @@ auto View::buildMenu() -> void {
     miscMenu.append(*GUIKIT::MenuSeparator::getInstance());
 
     recordAudio.onActivate = [this]() {    
-        program->toggleRecord();
+        toggleRecord();
     };
     recordAudio.setIcon(recordAudioImage);
     miscMenu.append(recordAudio);
@@ -2077,6 +2031,53 @@ auto View::buildMenu() -> void {
 
         diskControlMenu.menu.append( diskControlMenu.clearSave );
 
+        diskControlMenu.savePath.setIcon( openImage );
+
+        diskControlMenu.savePath.onActivate = [this]() {
+
+            if (!savePathWindow) {
+                savePathWindow = new SavePathWindow;
+                savePathWindow->setTitle( trans->getA("disksaves") );
+                savePathWindow->mainLayout.savePath.setImage( &openImage );
+                savePathWindow->mainLayout.defaultPath.setImage( &delImage );
+                savePathWindow->append( savePathWindow->mainLayout );
+
+                MiscHelper::centerGeometry( savePathWindow, {500u, 100u}, this->geometry() );
+
+                savePathWindow->mainLayout.defaultPath.onActivate = [this]() {
+                    auto settings = Program::getSettings( activeEmulator );
+                    settings->set<std::string>("disksave_folder", "");
+                    savePathWindow->mainLayout.edit.setText( FileHelper::generatedFolder(activeEmulator, "disksave_folder", "disksave", FileHelper::FLAG_VIEW) );
+                };
+
+                savePathWindow->mainLayout.savePath.onActivate = [this]() {
+                    auto settings = Program::getSettings( activeEmulator );
+                    auto curPath = settings->get<std::string>("disksave_folder", "");
+                    if (!curPath.empty())
+                        curPath = GUIKIT::File::resolveRelativePath(curPath);
+
+                    auto path = GUIKIT::BrowserWindow()
+                        .setTitle(trans->get("select_disksave_folder"))
+                        .setPath(curPath)
+                        .setWindow(*this)
+                        .directory();
+
+                    if (!path.empty()) {
+                        path = GUIKIT::File::buildRelativePath(path);
+                        settings->set<std::string>("disksave_folder", path);
+                        savePathWindow->mainLayout.edit.setText( path );
+                    }
+                    savePathWindow->setVisible( false );
+                };
+            }
+
+            savePathWindow->mainLayout.edit.setText( FileHelper::generatedFolder(activeEmulator, "disksave_folder", "disksave", FileHelper::FLAG_VIEW) );
+            savePathWindow->setVisible();
+            savePathWindow->setFocused();
+        };
+
+        diskControlMenu.menu.append( diskControlMenu.savePath );
+
         diskControlMenu.reset.setIcon( powerImage );
 
         diskControlMenu.reset.onActivate = [i]() {
@@ -2221,7 +2222,10 @@ auto View::updateDiskMenu() -> void {
     bool showResetAndHide = dynamic_cast<LIBC64::Interface*>(activeEmulator);
 
     for(auto& d : diskControlMenus) {
-        d.clearSave.setEnabled(!showResetAndHide);
+        if (d.clearSave.enabled() != !showResetAndHide) {
+            d.clearSave.setEnabled(!showResetAndHide);
+            d.savePath.setEnabled(!showResetAndHide);
+        }
 
         if (d.reset.enabled() != showResetAndHide) {
             d.reset.setEnabled(showResetAndHide);
@@ -2250,6 +2254,8 @@ auto View::showTapeMenu( bool show, Emulator::Interface::TapeMode mode ) -> void
 
 auto View::updateTapeIcons( Emulator::Interface::TapeMode mode ) -> void {
     typedef Emulator::Interface::TapeMode TapeMode;
+    if (!dynamic_cast<LIBC64::Interface*>(activeEmulator))
+        return;
     
     tapeStopItem.setIcon( mode == TapeMode::Stop ? stophiImage : stopImage );
     tapePlayItem.setIcon( mode == TapeMode::Play ? playhiImage : playImage );    
@@ -2418,6 +2424,7 @@ auto View::translate() -> void {
         diskControlMenu.reset.setText( trans->get("Reset Floppy") );
         diskControlMenu.inactive.setText( trans->get("inactive until reset") );
         diskControlMenu.clearSave.setText( trans->get("clear save file") );
+        diskControlMenu.savePath.setText( trans->get("disksaves") );
     }
 
     power.power.setText( trans->get("Hard Reset") );
@@ -2471,6 +2478,9 @@ auto View::translate() -> void {
     maximumSpeedItem.setText( trans->get("maximum speed") );
     customizeSpeedItem.setText( trans->get("customize speed") );
 
+    if (savePathWindow)
+        savePathWindow->setTitle( trans->getA("disksaves") );
+
     setAudioRecordText();
 }
 
@@ -2479,8 +2489,8 @@ auto View::updateScreenshotUI() -> void {
         recordUnscaledNoBorder.setText("320x200");
         recordUnscaledMonitor.setText("384x272");
     } else {
-        recordUnscaledNoBorder.setText(trans->getA("320x256"));
-        recordUnscaledMonitor.setText(trans->getA("344x280"));
+        recordUnscaledNoBorder.setText("320x256");
+        recordUnscaledMonitor.setText("344x280");
     }
 }
 
@@ -2693,18 +2703,7 @@ auto View::updateEmuUsage() -> void {
 }
 
 auto View::updateGeometry(bool withViewport) -> void {
-    GUIKIT::Geometry defaultGeometry = {100, 100, 800, 600};
-
-    GUIKIT::Geometry geometry = {globalSettings->get<int>("screen_x", defaultGeometry.x)
-            ,globalSettings->get<int>("screen_y", defaultGeometry.y)
-            ,globalSettings->get<unsigned>("screen_width", defaultGeometry.width)
-            ,globalSettings->get<unsigned>("screen_height", defaultGeometry.height)
-    };
-
-    setGeometry( geometry );
-
-    if (isOffscreen())
-        setGeometry( defaultGeometry );
+    MiscHelper::applyGeometry( this, globalSettings, "screen", {100, 100, 800, 600} );
 
     if (withViewport)
         updateViewport();
@@ -2753,7 +2752,7 @@ auto View::clearRecentList(Emulator::Interface* emulator) -> void {
 auto View::takeScreenshot() -> void {
     videoDriver->waitRenderThread();
     auto settings = Program::getSettings(activeEmulator);
-    auto _path = FileHelper::generatedFolder(activeEmulator, "screen_record_path", "recordings/screenshots", true);
+    auto _path = FileHelper::generatedFolder(activeEmulator, "screen_record_path", "recordings/screenshots", FileHelper::FLAG_CREATE);
     auto _file = settings->get<std::string>("save_ident", "screenshot");
     auto screenshotFormat = settings->get<std::string>("screen_record_format", "png");
     bool withEffects = globalSettings->get<bool>("screenshot_with_effects", true);
@@ -2881,9 +2880,18 @@ View::FpsWindow::Bottom::Bottom() {
     setAlignment( 0.5 );
 }
 
-auto View::FpsWindow::show() -> void {
-    auto geo = view->geometry();
+View::SavePathWindow::MainLayout::MainLayout() {
+    edit.setEditable( false );
+    append( edit, {~0u, 0u}, 10 );
+    append( spacer, {0u, ~0u} );
+    append( defaultPath, {0u, 0u}, 10 );
+    append( savePath, {0u, 0u} );
 
+    setMargin(10);
+    setAlignment( 0.5 );
+}
+
+auto View::FpsWindow::show() -> void {
     unsigned _width = 230;
     unsigned _height = 100;
 
@@ -2892,16 +2900,7 @@ auto View::FpsWindow::show() -> void {
         _height = 130;
     }
 
-    if (_width >= geo.width)
-        _width = geo.width;
-
-    if (_height >= geo.height)
-        _height = geo.height;
-
-    int _x = geo.x + (geo.width - _width) / 2;
-    int _y = geo.y + (geo.height - _height) / 2;
-
-    setGeometry( { _x, _y, _width, _height} );
+    MiscHelper::centerGeometry( this, {_width, _height}, view->geometry() );
 
     auto settings = Program::getSettings( activeEmulator );
     auto speed = settings->get<float>(getIdent(), mode == Mode::CUSTOM ? 59.95 : 500.0);
@@ -3068,4 +3067,54 @@ auto View::getReadable(DebuggerTheme theme, Emulator::Interface* emulator) -> st
     }
 
     return "";
+}
+
+auto View::couldDeviceBlockSecondMouseButton( ) -> bool {
+    if (!activeEmulator)
+        return false;
+
+    for(auto& connector : activeEmulator->connectors) {
+
+        auto device = activeEmulator->getConnectedDevice( &connector );
+
+        // light devices are usable even if mouse is not acquired.
+        // some of these devices (light pens) needs two mouse buttons.
+        // normally the second mouse button is reserved for displaying context menu.
+        // in this case, we want to disable context menu.
+        if ( device->isLightDevice() && device->inputs.size() > 3 )
+            return true;
+    }
+
+    return false;
+}
+
+auto View::isAnalogDeviceConnected( ) -> bool {
+
+    if (!activeEmulator)
+        return false;
+
+    for(auto& connector : activeEmulator->connectors) {
+
+        auto device = activeEmulator->getConnectedDevice( &connector );
+
+        if ( device->isMouse() || device->isPaddles() || device->isLightDevice() )
+            return true;
+    }
+
+    return false;
+}
+
+auto View::toggleRecord() -> void {
+    auto emuView = EmuConfigView::TabWindow::getView(activeEmulator);
+    if (emuView && emuView->audioLayout) {
+        emuView->audioLayout->toggleRecord();
+    } else if (audioManager) {
+        emuThread->lock();
+        std::string errorText;
+        if (!audioManager->record.toggle(activeEmulator, errorText))
+            statusHandler->setMessage(errorText, true);
+
+        setAudioRecordText();
+        emuThread->unlock();
+    }
 }

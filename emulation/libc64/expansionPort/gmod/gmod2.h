@@ -46,7 +46,7 @@ struct Gmod2 : Cart {
     auto write() -> void;
     auto writeEeprom() -> void;
 
-    static auto createImage(unsigned& imageSize, uint8_t id) -> uint8_t*;
+    static auto createImage(Emulator::Interface::Media* media, unsigned& imageSize) -> uint8_t*;
 
     auto serialize(Emulator::Serializer& s) -> void;
 
@@ -55,8 +55,6 @@ struct Gmod2 : Cart {
 
     auto setSecondaryWriteProtect(bool state) -> void;
     auto isSecondaryWriteProtected() -> bool;
-	
-	auto hasSecondaryRom() -> bool { return true; }
 
     auto getSizeNotConsideredForMemorySerialization() -> unsigned;
 

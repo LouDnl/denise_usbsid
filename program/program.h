@@ -28,9 +28,6 @@
 #define LICENSE "GPLv3"
 #define AUTHOR "PiCiJi"
 
-#define MAX_MEDIUM_SIZE (100u * 1024u * 1024u)
-#define MAX_FIRMWARE_SIZE (512u * 1024u + 11)
-
 #define ERROR_COLOR 0xff4500
 #define SUCCESS_COLOR 0x009911
 #define DEBUG_COLOR 0xff514f
@@ -125,6 +122,9 @@ struct Program : Emulator::Interface::Bind {
 	auto readAssignedMedia(Emulator::Interface::Media* media, uint8_t*& buffer, bool preview) -> unsigned override;
 	auto writeAssignedMedia(Emulator::Interface::Media* media, uint8_t* buffer, unsigned length) -> unsigned override;
     auto truncateMedia(Emulator::Interface::Media* media) -> bool override;
+    auto isArchivedMedia(Emulator::Interface::Media* media) -> bool override;
+    auto getFileFromArchive(Emulator::Interface::Media* media, unsigned id) -> Emulator::Interface::Data override;
+    auto getFileList(Emulator::Interface::Media* media, const std::string& sub) -> std::vector<std::pair<unsigned, std::string>> override;
     auto getFileNameFromMedia(Emulator::Interface::Media* media) -> std::string override;
     auto unloadMedia(Emulator::Interface::Media* media) -> void override;
 
@@ -151,12 +151,9 @@ struct Program : Emulator::Interface::Bind {
     auto unsetObsoleteConfigs(GUIKIT::Settings* settings, Emulator::Interface* emulator) -> void;
 
     //audio
-    auto initAudio() -> void;
-	auto getAudioDriver() -> std::string;
     auto audioSample(int16_t sampleLeft, int16_t sampleRight) -> void override;
     auto audioFlush() -> void override;
-    auto mixDriveSound( Emulator::Interface::Media* media, Emulator::Interface::DriveSound driveSound, bool alternate, uint8_t data = 0) -> void override;
-    auto toggleRecord() -> void;
+    auto mixDriveSound( Emulator::Interface::Media* media, Emulator::Interface::DriveSound driveSound, bool alternate, uint8_t data) -> void override;
     
     //video
     auto setVideoDimension(Emulator::Interface* emulator = nullptr) -> void;
@@ -186,7 +183,6 @@ struct Program : Emulator::Interface::Bind {
     auto setRotation() -> void;
     auto checkShaderSupport(Emulator::Interface* emulator) -> void;
     auto loadProgress() -> void;
-	auto activateGPU(Emulator::Interface* emulator, bool state) -> void;
 	auto updateOnScreenText(bool keepFontPath = false) -> void;
     auto takeScreenshot(uint8_t* _data, unsigned _width, unsigned _height) -> void;
     auto bufferScreenshot(uint8_t* _data, unsigned _size) -> void;
@@ -194,18 +190,8 @@ struct Program : Emulator::Interface::Bind {
     auto updateBFI() -> void;
 	
     //input
-    auto initInput() -> void;
-	auto getInputDriver() -> std::string;
     auto inputPoll(uint16_t deviceId, uint16_t inputId) -> int16_t override;
-    auto getDevice( Emulator::Interface* emulator, Emulator::Interface::Connector* connector ) -> Emulator::Interface::Device*;
-    auto isAnalogDeviceConnected( ) -> bool;
-    auto couldDeviceBlockSecondMouseButton( ) -> bool;
-    auto absoluteMouseToEmu( Emulator::Interface* emulator ) -> GUIKIT::Position;
     auto jitPoll(int delay) -> bool override;
-    auto resetRunAhead() -> void;
-    auto setRunAhead(Emulator::Interface* emulator) -> void;
-    auto setJit(Emulator::Interface* emulator) -> void;
-    auto setRewind(Emulator::Interface* emulator) -> void;
 
     auto openDebugger(Emulator::Interface* emulator, DebuggerTheme theme) -> void;
     auto createDebugger(Emulator::Interface* emulator, DebuggerTheme theme) -> Debugger*;

@@ -265,9 +265,11 @@ struct Window : Base {
     auto append(Layout& layout) -> void;
     auto append(Widget& widget) -> void;
     auto hasAppended(Widget& widget) -> bool;
+    auto hasAppended(Layout& layout) -> bool;
     auto append(StatusBar& statusBar) -> void;
     auto remove(Menu& menu) -> void;
     auto remove(Layout& layout) -> void;
+    auto removeActiveLayout() -> void;
     auto remove(Widget& widget) -> void;
     auto remove(StatusBar& statusBar) -> void;
     auto isApended(Menu& menu) -> bool;
@@ -696,6 +698,7 @@ struct ComboButton : Widget {
         std::string text;
         int userData;
         std::string font;
+        std::string link;
     };
 
     auto rowCount() const -> unsigned { return state.rows.size(); }
@@ -706,6 +709,7 @@ struct ComboButton : Widget {
     auto text() const -> std::string { return text( state.selection ); }
     auto text(unsigned selection) const -> std::string;
     auto droppable() -> bool const { return state.droppable; }
+    auto getEntry(unsigned selection) -> Entry*;
 
     auto append(const std::string& text, int userData = 0, const std::string& font = "") -> void;
     auto appendMulti(std::vector<Entry>& rows, bool clearBefore = true) -> void;
@@ -1208,7 +1212,7 @@ struct MenuBase : Base {
     auto setEnabled(bool enabled = true) -> void;
     auto setVisible(bool visible = true) -> void;
     auto setText(const std::string& text) -> void;
-    auto setFilePath(const std::string& path) -> void;
+    auto setFileIdent(const std::string& path, unsigned ident) -> void;
     auto setIcon(Image& icon) -> void;
     auto parentMenu() -> Menu* { return state.parentMenu; }
     auto parentWindow() -> Window* { return state.parentWindow; }
@@ -1216,8 +1220,9 @@ struct MenuBase : Base {
     struct {
         bool enabled = true;
         bool visible = true;
-        std::string text = "";
-        std::string filePath = "";
+        std::string text;
+        std::string filePath;
+        unsigned fileId = 0;
         Image* icon = new Image;
         Menu* parentMenu = nullptr;
         Window* parentWindow = nullptr;
@@ -1544,8 +1549,8 @@ struct ThreadPriority {
 
 struct File {
     struct Info {
-        std::string name = "";
-        std::string date = "";
+        std::string name;
+        std::string date;
         uint64_t size = 0;
         bool exists = true;
         bool isDir = false;
@@ -1572,6 +1577,7 @@ struct File {
     auto getDate() const -> std::string { return fileInfo.date; }
     auto getType() const -> Type { return type; }
     auto getFileName(bool removeExtension = false, bool truncateFromEnd = false) -> std::string;
+    auto getFileName(Item* item) -> std::string;
     auto getPath() -> std::string;
     auto getExtension() -> std::string;
     auto getHandle() -> FILE* { return fp; }
@@ -1848,6 +1854,11 @@ struct Vector {
         auto itPos = v.begin() + ( (pos >= v.size()) ? v.size() : pos);
         v.insert( itPos, value );
     }
+    template <typename T>
+    static auto getElements(const std::vector<T>& v, unsigned count) -> std::vector<T> {
+	    std::vector<T> crop(v.begin(), v.begin() + std::min<size_t>(count, v.size()));
+	    return crop;
+	}
     Vector() = delete;
 };
 

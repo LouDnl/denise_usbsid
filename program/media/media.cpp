@@ -17,6 +17,7 @@
 #include "recentFiles.h"
 #include "../emuconfig/layouts/system.h"
 #include "../helper/fileHelper.h"
+#include "../helper/miscHelper.h"
 
 #include <thread>
 #include <vector>
@@ -159,6 +160,7 @@ auto MediaLayout::build() -> void {
 	expansionImage.loadPng((uint8_t*) Icons::memory, sizeof (Icons::memory));
 	memoryImage.loadPng((uint8_t*) Icons::memory, sizeof (Icons::memory));
     addImage.loadPng((uint8_t*) Icons::add, sizeof (Icons::add));
+    closeImage.loadPng((uint8_t*) Icons::close, sizeof (Icons::close));
 	pathImage.loadPng((uint8_t*) Icons::folderOpen, sizeof (Icons::folderOpen));       
     swapperImage.loadPng((uint8_t*) Icons::swapper, sizeof (Icons::swapper));
     
@@ -168,7 +170,7 @@ auto MediaLayout::build() -> void {
     settingsImage.loadPng((uint8_t*)Icons::settings, sizeof(Icons::settings) );
     searchImage.loadPng((uint8_t*)Icons::search, sizeof(Icons::search) );
     
-    openImg.loadPng((uint8_t*)Icons::open, sizeof(Icons::open) );
+    openImage.loadPng((uint8_t*)Icons::open, sizeof(Icons::open) );
     ejectImg.loadPng((uint8_t*)Icons::eject, sizeof(Icons::eject) );
 
     binaryImage.loadPng((uint8_t*)Icons::binary, sizeof(Icons::binary));
@@ -291,24 +293,6 @@ auto MediaLayout::build() -> void {
     navElements.push_back( { tvi, nullptr, (GUIKIT::Layout*)swapperLayout } );
 
     tvi = new GUIKIT::TreeViewItem;
-    tvi->setText( "create" );
-    tvi->setImage( addImage );    
-    mediaTree.append(*tvi);    
-    prepareCreator();
-    moduleSwitch.setLayout( navElements.size(), creatorLayout, {~0u, ~0u} );
-    tvi->setUserData( (uintptr_t)(navElements.size() ) );
-    navElements.push_back( { tvi, nullptr, (GUIKIT::Layout*)&creatorLayout } );
-    
-    tvi = new GUIKIT::TreeViewItem;
-    tvi->setText( "paths" );
-    tvi->setImage( imgDocument );    
-    mediaTree.append(*tvi);    
-    preparePaths();
-    moduleSwitch.setLayout( navElements.size(), pathsLayout, {~0u, ~0u} );    
-    tvi->setUserData( (uintptr_t)(navElements.size() ) );
-    navElements.push_back( { tvi, nullptr, (GUIKIT::Layout*)&pathsLayout } );
-
-    tvi = new GUIKIT::TreeViewItem;
     tvi->setText( "file dialog preview" );
     tvi->setImage( settingsImage );
     mediaTree.append(*tvi);
@@ -334,6 +318,15 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
 
         if (IPMode && fSetting->path.empty())
             fSetting->setPath("127.0.0.1:25232");
+
+	    block->selector.add.onActivate = [this, block]() {
+	        if (!creatorWindow) {
+	            creatorWindow = new CreatorWindow(this->emulator);
+	            creatorWindow->build( this );
+	        }
+
+	        creatorWindow->open(block->media);
+	    };
             
         block->selector.open.onActivate = [this, block]() {
             
@@ -368,7 +361,7 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
                 
                 layout->selectedBlock = block;
                 
-                if (layout->mediaGroup->selected && !block->media->secondary) {
+                if (layout->mediaGroup->selected && !block->media->parent) {
                     layout->mediaGroup->selected = block->media;
                     settings->set<unsigned>( _underscore(layout->mediaGroup->name) + "_selected", block->media->id);
                     block->header.inUse.setChecked();
@@ -396,8 +389,31 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
             };
 
             block->selector.pathCombo->onChange = [this, layout, block]() {
+                auto entry = block->selector.pathCombo->getEntry( block->selector.pathCombo->selection() );
+                if (!entry)
+                    return;
 
-                drop(GUIKIT::File::resolveRelativePath(block->selector.pathCombo->text()), block);
+                GUIKIT::File* file = filePool->get(GUIKIT::File::resolveRelativePath(entry->link));
+                if (!file || !file->exists() || !file->getSize())
+                    return FileHelper::errorOpen( file, nullptr, message );
+
+                auto& items = file->scanArchive();
+                auto itemId = (unsigned)entry->userData;
+
+                GUIKIT::File::Item* item = nullptr;
+                if (items.size() > itemId)
+                    item = &items[itemId];
+
+                if (!item || (item->info.size == 0) )
+                    return FileHelper::errorOpen( file, item, message );
+
+                emuThread->lock();
+                insertImage( block, file, &items[itemId] );
+
+                if (block->media->group->isDrive())
+                    settings->set<int>("swap_pos", -1, false);
+                emuThread->unlock();
+
             };
         }
 
@@ -466,10 +482,11 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
             }                                
         };
 
-        block->selector.open.setImage(&openImg);
-        block->header.eject.setImage(&ejectImg);		
+        block->selector.open.setImage(&openImage);
+	    block->selector.add.setImage(&addImage);
+        block->header.eject.setImage(&ejectImg);
 
-        if (mediaGroup->expansion && !block->media->secondary) {
+        if (mediaGroup->expansion && !block->media->parent) {
             for (auto& jumper : mediaGroup->expansion->jumpers) {
 
                 unsigned jumperId = jumper.id;
@@ -530,7 +547,7 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
             emuThread->unlock();
         };
 
-        layout->inject.onActivate = [this, layout]() {
+        layout->control.inject.onActivate = [this, layout]() {
 
             if (activeEmulator != emulator)
                 return;
@@ -551,6 +568,10 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
                 view->setFocused( 100 );
             }
             emuThread->unlock();
+        };
+
+        layout->control.save.onActivate = [this, layout]() {
+            createImage( layout->selectedBlock->media );
         };
     }
 
@@ -652,45 +673,200 @@ auto MediaLayout::bindSelectorAction(MediaGroupLayout* layout) -> void {
     };
 }
 
-auto MediaLayout::createImage( Emulator::Interface::MediaGroup* mediaGroup ) -> void {
+auto CreatorWindow::HdCreatorLayout::reset() -> void {
+    cancel = true;
+    progress.bar.setPosition(0);
+    progress.label.setText("0 %");
+}
 
-	std::string ident = mediaGroup->name;
-	std::string suffix = mediaGroup->creatable[0];
-    std::string fn;
-    unsigned id = 0;
-	
-    if (mediaGroup->isExpansion()) {
-        id = flashCreatorLayout->format.userData();
-        
-        mediaGroup = &emulator->mediaGroups[ id & 0xff ];
-        id >>= 8;
-        
-        if (id < mediaGroup->creatable.size())
-            suffix = mediaGroup->creatable[id];
+auto CreatorWindow::open(Emulator::Interface::Media* media) -> void {
+    this->media = media;
+    auto mediaGroup = media->group;
+    unsigned _width = 500;
+    unsigned _height = 120;
 
-		ident = mediaGroup->expansion->creationIdents[id];
+    if (mediaGroup->isDisk()) {
+        if (!hasAppended(diskCreatorLayout)) {
+            removeActiveLayout();
+            append( diskCreatorLayout );
+        }
+    } else if (mediaGroup->isHardDisk()) {
+        hdCreatorLayout.reset();
+
+        if (!hasAppended(hdCreatorLayout)) {
+            removeActiveLayout();
+            append( hdCreatorLayout );
+        }
+    } else if (mediaGroup->isTape()) {
+        if (!hasAppended(tapeCreatorLayout)) {
+            removeActiveLayout();
+            append( tapeCreatorLayout );
+        }
+        _width = 270;
+    } else if (mediaGroup->isExpansion()) {
+        if (!hasAppended(cartCreatorLayout)) {
+            removeActiveLayout();
+            append( cartCreatorLayout );
+        }
+        _width = 270;
     }
-    
-    std::string title = ident + "_image";    
+
+    MiscHelper::centerGeometry( this, {_width, _height}, mediaLayout->tabWindow->geometry() );
+
+    setVisible();
+    setFocused();
+}
+
+auto CreatorWindow::build( MediaLayout* mediaLayout ) -> void {
+    this->mediaLayout = mediaLayout;
+
+    diskCreatorLayout.create.setImage( &mediaLayout->addImage );
+    diskCreatorLayout.close.setImage( &mediaLayout->closeImage );
+
+    hdCreatorLayout.creator.create.setImage( &mediaLayout->addImage );
+    hdCreatorLayout.creator.close.setImage( &mediaLayout->closeImage );
+
+    tapeCreatorLayout.create.setImage( &mediaLayout->addImage );
+    tapeCreatorLayout.close.setImage( &mediaLayout->closeImage );
+
+    cartCreatorLayout.create.setImage( &mediaLayout->addImage );
+    cartCreatorLayout.close.setImage( &mediaLayout->closeImage );
+
+    diskCreatorLayout.create.onActivate = [this, mediaLayout]() {
+        if (mediaLayout->insertCreatedImage( media ))
+            setVisible(false);
+        else
+            setFocused();
+    };
+
+    hdCreatorLayout.creator.create.onActivate = [this, mediaLayout]() {
+        if (mediaLayout->insertCreatedImage( media ))
+            setVisible(false);
+        else
+            setFocused();
+    };
+
+    tapeCreatorLayout.create.onActivate = [this, mediaLayout]() {
+        if (mediaLayout->insertCreatedImage( media ))
+            setVisible(false);
+        else
+            setFocused();
+    };
+
+    cartCreatorLayout.create.onActivate = [this, mediaLayout]() {
+        if (mediaLayout->insertCreatedImage( media ))
+            setVisible(false);
+        else
+            setFocused();
+    };
+
+    diskCreatorLayout.close.onActivate = [this]() {
+        setVisible(false);
+    };
+
+    hdCreatorLayout.creator.close.onActivate = [this]() {
+        hdCreatorLayout.reset();
+        setVisible(false);
+    };
+
+    tapeCreatorLayout.close.onActivate = [this]() {
+        setVisible(false);
+    };
+
+    cartCreatorLayout.close.onActivate = [this]() {
+        setVisible(false);
+    };
+
+    translate();
+}
+
+auto CreatorWindow::translate() -> void {
+    diskCreatorLayout.setText( trans->get("disk_creator") );
+
+    diskCreatorLayout.block.format.label.setText(trans->get("format",{}, true));
+    diskCreatorLayout.block.diskLabel.label.setText(trans->get("disk label",{}, true));
+    diskCreatorLayout.options.fastFileSystem.setText(trans->get("ffs"));
+    diskCreatorLayout.options.highDensity.setText(trans->get("high_density"));
+    diskCreatorLayout.options.bootable.setText(trans->get("bootable"));
+
+    hdCreatorLayout.setText( trans->get("harddisk_creator") );
+
+    hdCreatorLayout.creator.diskSizeLabel.setText( trans->get("size_in_mb", {}, true) );
+    hdCreatorLayout.creator.formatName.setText(trans->getA("format", true));
+
+    tapeCreatorLayout.setText( trans->get("tape_creator") );
+    tapeCreatorLayout.create.setText(trans->get("create"));
+    tapeCreatorLayout.close.setText(trans->get("close"));
+
+    cartCreatorLayout.setText( trans->get("memory_creator") );
+    cartCreatorLayout.create.setText(trans->get("create"));
+    cartCreatorLayout.close.setText(trans->get("close"));
+
+    GUIKIT::Layout::alignChildWidth({&diskCreatorLayout.block.format, &diskCreatorLayout.block.diskLabel});
+}
+
+auto MediaLayout::insertCreatedImage(Emulator::Interface::Media* media) -> bool {
+    auto filePtr = createImage( media );
+
+    if (filePtr) {
+        auto items = filePtr->scanArchive();
+        emuThread->lock();
+        insertImage(media, filePtr, &items[0]);
+        emuThread->unlock();
+    }
+    return filePtr != nullptr;
+}
+
+auto MediaLayout::createImage( Emulator::Interface::Media* media ) -> GUIKIT::File* {
+    auto mediaGroup = media->group;
+    std::string title = mediaGroup->name + "_image";
+    std::string suffix = mediaGroup->suffix[0];
+    std::string fn;
+    std::vector<std::vector<std::string>> replacements;
     GUIKIT::File file;
-    GUIKIT::File* filePtr;
+    GUIKIT::File* filePtr = nullptr;
     std::string filePath;
     uint8_t* data = nullptr;
     unsigned size = 0;
-    int insertId = -1;
+	
+    if (mediaGroup->isExpansion()) {
+        title = "cart_image";
+
+        switch (media->type) {
+            case Emulator::Interface::Media::MemoryType::SRAM:
+                suffix = "bin";
+                replacements.push_back({"%cart%", "SRAM"});
+                break;
+            case Emulator::Interface::Media::MemoryType::EEPROM:
+                suffix = "bin";
+                replacements.push_back({"%cart%", "EEPROM"});
+                break;
+            case Emulator::Interface::Media::MemoryType::FLASH:
+                suffix = "crt";
+                replacements.push_back({"%cart%", "FLASH"});
+                break;
+            default:
+                return nullptr;
+        }
+    }
 
     if (mediaGroup->isHardDisk()) {
+        if (!creatorWindow)
+            return nullptr;
+
+        auto& hdCreator = creatorWindow->hdCreatorLayout.creator;
+
         try {
-            size = std::stoi( hdCreatorLayout->creator.diskSize.text() );
+            size = std::stoi( hdCreator.diskSize.text() );
             if (size > 102400) // 100 GB
                 throw "";
         } catch (...) {
             message->error(trans->getA("invalid_input"));
-            return;
+            return nullptr;
         }    
         
-        suffix = hdCreatorLayout->creator.format.text();
-        bool vhd = hdCreatorLayout->creator.format.userData() != 0;
+        suffix = hdCreator.format.text();
+        bool vhd = hdCreator.format.userData() != 0;
         Emulator::Interface::Data _data = emulator->createHardDiskImage((uint64_t)size * 1024ull * 1024ull, vhd);
         if (_data.ptr) {
             data = _data.ptr;
@@ -698,29 +874,30 @@ auto MediaLayout::createImage( Emulator::Interface::MediaGroup* mediaGroup ) -> 
         }
         
     } else if (mediaGroup->isDisk()) {
-        suffix = diskCreatorLayout->format.text();
-        
-        unsigned typeId = diskCreatorLayout->format.userData();
-        bool hd = diskCreatorLayout->options.highDensity.checked();
-        bool bootable = diskCreatorLayout->options.bootable.checked();
-        bool useFFS = diskCreatorLayout->options.fastFileSystem.checked();
-        std::string diskName = diskCreatorLayout->diskLabel.text();
-        insertId = diskCreatorLayout->insertDevice.userData();
+        if (!creatorWindow)
+            return nullptr;
+
+        auto& diskCreator = creatorWindow->diskCreatorLayout;
+
+        suffix = diskCreator.block.format.combo.text();
+        unsigned typeId = diskCreator.block.format.combo.userData();
+        bool hd = diskCreator.options.highDensity.checked();
+        bool bootable = diskCreator.options.bootable.checked();
+        bool useFFS = diskCreator.options.fastFileSystem.checked();
+        std::string diskName = diskCreator.block.diskLabel.edit.text();
         
         Emulator::Interface::Data _data = emulator->createDiskImage( typeId, diskName, hd, useFFS, bootable );
-
         data = _data.ptr;
         size = _data.size;
 
     } else if (mediaGroup->isTape()) {
-        insertId = tapeCreatorLayout->insertDevice.userData();
         data = emulator->createTapeImage( size );
         
     } else if (mediaGroup->isProgram()) {
         data = emulator->getLoadedProgram( size );
         
     } else if (mediaGroup->isExpansion()) {
-        data = emulator->createExpansionImage( mediaGroup, size, id );
+        data = emulator->createExpansionImage( media, size );
     }
     
     if (!size)
@@ -728,46 +905,48 @@ auto MediaLayout::createImage( Emulator::Interface::MediaGroup* mediaGroup ) -> 
     
     filePath = GUIKIT::BrowserWindow()
         .setWindow(*this->tabWindow)
-        .setTitle(trans->get( "blank_" + title ))
-        .setPath( fileloader->preselectPath( settings, ident ))
-        .setFilters({GUIKIT::BrowserWindow::transformFilter( trans->get( title ), {suffix}), trans->get("all_files")})
+        .setTitle(trans->get( "blank_" + title, replacements ))
+        .setPath( fileloader->preselectPath( settings, mediaGroup->name ))
+        .setFilters({GUIKIT::BrowserWindow::transformFilter( trans->get( title, replacements ), {suffix}), trans->get("all_files")})
         .save();
 
     if (filePath.empty())
         goto Done;
 
     fn = GUIKIT::String::getFileName(filePath);
-    if (GUIKIT::String::getExtension(fn, "") == "")
+    if (GUIKIT::String::getExtension(fn, "").empty())
         filePath += "." + suffix;
 
-    filePtr = filePool->get( filePath, insertId >= 0 );
+    filePtr = filePool->get( filePath );
     if (filePtr)
         filePtr->forceDataChange();
         
     file.setFile( filePath );
 
-    if (GUIKIT::Application::isGtk()) {
+    if (!GUIKIT::Application::isCocoa()) {
         if (file.exists() && !message->question(trans->get("file_exist_error", {
-                {"%path%", filePath}})))
+                {"%path%", filePath}}))) {
+            filePtr = nullptr;
             goto Done;
+        }
     }
 
     if ( !file.open(GUIKIT::File::Mode::Write) ) {
         message->error(trans->get("file_creation_error",{
             {"%path%", filePath}
         }));
-        
+        filePtr = nullptr;
         goto Done;
     }
 
-    savePath( ident, file.getPath() );
+    settings->set<std::string>(_underscoreEx(mediaGroup->name) + "_folder_auto", GUIKIT::File::buildRelativePath(file.getPath()));
 
     if (data) {
         if (!file.write( data, size )) {
             message->error(trans->get("file_creation_error",{
                 {"%path%", filePath}
             }));
-
+            filePtr = nullptr;
             goto Done;
         }
 
@@ -777,22 +956,26 @@ auto MediaLayout::createImage( Emulator::Interface::MediaGroup* mediaGroup ) -> 
         
     } else {
         // hd creation in chunks without any data
+        auto* hdCreator = &creatorWindow->hdCreatorLayout;
         file.unload();
+        filePtr = nullptr; // insert delayed
 
-        hdCreatorLayout->progress.bar.setPosition(0);
-        hdCreatorLayout->progress.label.setText("0 %");
-        hdCreatorLayout->creator.button.setEnabled(false);
+      //  hdCreator->progress.bar.setPosition(0);
+      //  hdCreator->progress.label.setText("0 %");
+        hdCreator->creator.create.setEnabled(false);
+        hdCreator->cancel = false;
         
-        std::thread t1([this, size, filePath] {            
+        std::thread t1([this, size, filePath, media, hdCreator] {
             GUIKIT::File file(filePath);
             file.open(GUIKIT::File::Mode::Write);
+            bool error = false;
 
             uint64_t totalKb = (uint64_t)size * 1024ull;
             uint64_t bufLengthKB = (totalKb * 2ull) / 100ull;
             if (bufLengthKB > (1024ull * 1024ull))
                 bufLengthKB = 1024ull * 1024ull;
 
-            uint8_t* buf = new uint8_t[bufLengthKB * 1024ull];
+            auto* buf = new uint8_t[bufLengthKB * 1024ull];
 
             for (uint64_t offset = 0; offset < totalKb; offset += bufLengthKB) {
                 std::memset(buf, 0, bufLengthKB * 1024ull);
@@ -804,157 +987,42 @@ auto MediaLayout::createImage( Emulator::Interface::MediaGroup* mediaGroup ) -> 
                     message->error(trans->get("file_creation_error", {
                         {"%path%", filePath}
                     }));
+                    error = true;
                     break;
                 }
 
+                if (hdCreator->cancel)
+                    break;
+
                 unsigned posPercent = ((double)(offset + bufLengthKB) * 100.0 / (double)totalKb) + 0.5;
 
-                hdCreatorLayout->progress.bar.setPositionThreaded(posPercent);
-                hdCreatorLayout->progress.label.setTextThreaded(std::to_string(posPercent) + " %");
+                hdCreator->progress.bar.setPositionThreaded(posPercent);
+                hdCreator->progress.label.setTextThreaded(std::to_string(posPercent) + " %");
             }
 
             delete[] buf;
-            hdCreatorLayout->creator.button.setEnabledThreaded();
+
+            hdCreator->creator.create.setEnabledThreaded();
+
+            if (error || hdCreator->cancel) {
+                file.reset();
+                file.del();
+                return;
+            }
+
+            if (emuThread->enabled) {
+                emuThread->events |= EmuThread::EVT_INSERT_MEDIA;
+                emuThread->insertMedia.emulator = emulator;
+                emuThread->insertMedia.media = media;
+                emuThread->insertMedia.file = filePool->get( filePath );
+            }
         });
         t1.detach();
     }
-
-    if (insertId >= 0) {
-        auto media = emulator->getMedia( *mediaGroup, insertId );
-        if (media) {
-            auto items = filePtr->scanArchive();
-            emuThread->lock();
-            insertImage(media, filePtr, &items[0]);
-            emuThread->unlock();
-        }
-    }
             
     Done:
-        if (data)
-            delete[] data;                   
-}
-
-auto MediaLayout::prepareCreator() -> void {
-
-    for (auto& mediaGroup : emulator->mediaGroups) {
-		Emulator::Interface::MediaGroup* group = &mediaGroup;
-        
-        if (mediaGroup.isHardDisk()) {
-
-            hdCreatorLayout = new HdCreatorLayout(&mediaGroup);
-
-            hdCreatorLayout->creator.button.onActivate = [this, group]() {
-                createImage( group );
-            };
-
-            creatorLayout.append(*hdCreatorLayout, {~0u, 0u}, 5);
-
-        } else if (mediaGroup.isDisk()) {
-
-            diskCreatorLayout = new DiskCreatorLayout(emulator, &mediaGroup );
-
-            diskCreatorLayout->button.onActivate = [this, group]() {
-                createImage( group );                
-            };
-
-            creatorLayout.append(*diskCreatorLayout, {~0u, 0u}, 5);
-
-        } else if (mediaGroup.isTape()) {
-
-            tapeCreatorLayout = new TapeCreatorLayout( &mediaGroup);
-
-            tapeCreatorLayout->button.onActivate = [this, group]() {
-                createImage( group );                
-            };
-
-            creatorLayout.append(*tapeCreatorLayout, {~0u, 0u}, 5);
-			
-        } else if (mediaGroup.isProgram()) {
-			
-			memoryCreatorLayout = new MemoryCreatorLayout;
-			
-			memoryCreatorLayout->button.onActivate = [this, group]() {
-                createImage( group );
-			};
-			
-			creatorLayout.append(*memoryCreatorLayout, {~0u, 0u}, 5);
-            
-		} else if (mediaGroup.isExpansion() && (mediaGroup.expansion->isFlash() || mediaGroup.expansion->isEprom() || mediaGroup.expansion->isBattery()) ) {
-            
-            if (!flashCreatorLayout) {
-                flashCreatorLayout = new FlashCreatorLayout;
-
-                flashCreatorLayout->button.onActivate = [this, group]() {
-                    createImage(group);
-                };
-
-                creatorLayout.append(*flashCreatorLayout, {~0u, 0u}, 5);
-            }
-
-            unsigned i = 0;
-            for( auto& creationIdent : mediaGroup.expansion->creationIdents )                                
-                flashCreatorLayout->format.append( creationIdent, (i++ << 8) | mediaGroup.id );
-		}
-    }
-}
-
-auto MediaLayout::preparePath(Emulator::Interface::MediaGroup& mediaGroup) -> void {
-    if (mediaGroup.isExpansion() && mediaGroup.expansion->isRS232())
-        return;
-
-    auto settingFolderIdent = _underscoreEx(mediaGroup.name) + "_folder";
-
-    auto block = new PathsLayout::Block( &mediaGroup );
-
-    pathsLayout.blocks.push_back( block );
-    pathsLayout.append( *block,{~0u, 0u}, 5 );
-
-    std::string title = "select_" + mediaGroup.name + "_folder";
-
-    if (mediaGroup.isExpansion())
-        title = "select_cartridge_folder";
-
-    block->select.onActivate = [this, block, title, settingFolderIdent]() {
-        auto curPath = settings->get<std::string>(settingFolderIdent, "");
-        if (!curPath.empty())
-            curPath = GUIKIT::File::resolveRelativePath(curPath);
-
-        auto path = GUIKIT::BrowserWindow()
-            .setTitle(trans->get(title))
-            .setPath(curPath)
-            .setWindow(*this->tabWindow)
-            .directory();
-
-        if (!path.empty()) {
-            path = GUIKIT::File::buildRelativePath(path);
-            settings->set<std::string>(settingFolderIdent, path);
-            block->edit.setText(path);
-        }
-    };
-
-    block->empty.onActivate = [this, block, settingFolderIdent]() {
-        settings->set<std::string>(settingFolderIdent, "");
-        block->edit.setText("");
-    };
-
-    block->edit.setText( settings->get<std::string>(settingFolderIdent, "") );
-
-    block->select.setImage(&openImg);
-    block->empty.setImage(&ejectImg);
-}
-
-auto MediaLayout::preparePaths() -> void {
-    for (auto& mediaGroup : emulator->mediaGroups)
-        preparePath(mediaGroup);
-
-    if (dynamic_cast<LIBAMI::Interface*>(emulator)) {
-        auto saveImage = new Emulator::Interface::MediaGroup;
-        saveImage->id = emulator->mediaGroups.size();
-        saveImage->name = "disksave";
-        saveImage->suffix.push_back("sav");
-        saveImage->type = Emulator::Interface::MediaGroup::Type::Disk;
-        preparePath(*saveImage);
-    }
+    delete[] data;
+    return filePtr;
 }
 
 auto MediaLayout::updateMediaBlock(MediaGroupLayout::Block* block, FileSetting* fSetting) -> void {
@@ -968,24 +1036,35 @@ auto MediaLayout::updateMediaBlock(MediaGroupLayout::Block* block, FileSetting* 
 
     if (pathCombo) {
         auto recentFile = fileloader->getRecentFile(emulator);
-        auto& files = recentFile->list(block->media->group, block->media->secondary, fSetting->path);
+        RecentFiles::FileIdent fI{fSetting->path, fSetting->file, fSetting->id};
+        auto& fileIdents = recentFile->list(block->media->group, block->media->parent != nullptr, fI);
 
-        //pathCombo->reset();
         std::vector<GUIKIT::ComboButton::Entry> rows;
 
-        for (auto& file : files)
-           rows.push_back( {file, 0, ""} );
+        for (auto& fileIdent : fileIdents)
+           rows.push_back( {fileIdent.file, (int)fileIdent.id, "", fileIdent.path} );
 
         pathCombo->appendMulti( rows );
 
         if (fSetting->path.empty())
             pathCombo->unselect();
-        else
-            pathCombo->setSelectionByText(fSetting->path);
+        else {
+            unsigned selection = 0;
+            for (auto& entry : pathCombo->rows()) {
+                if (entry.link == fSetting->path && entry.userData == fSetting->id) {
+                    pathCombo->setSelection( selection );
+                    selection = ~0;
+                    break;
+                }
+                selection++;
+            }
+            if (selection != ~0)
+                pathCombo->unselect();
+        }
     }
 
     if (!IPMode) {
-        block->header.fileName.setText(fSetting->file);
+        block->header.fileName.setText( GUIKIT::File::getPath(fSetting->path));
         block->header.writeprotect.setChecked( fSetting->writeProtect );
     }
 
@@ -1015,15 +1094,6 @@ auto MediaLayout::updateListing( Emulator::Interface::Media* media ) -> void {
     }
 }
 
-auto MediaLayout::savePath( std::string& groupName, std::string path ) -> void {
-	
-	auto baseFolderIdent = _underscoreEx(groupName) + "_folder";
-
-    path = GUIKIT::File::buildRelativePath(path);
-	
-	settings->set<std::string>(baseFolderIdent + "_auto", path);
-}
-
 auto MediaLayout::translate(NavElement& nav) -> void {   
     bool isC64 = dynamic_cast<LIBC64::Interface*>(emulator);
     auto mediaGroup = nav.mediaGroup;
@@ -1035,10 +1105,11 @@ auto MediaLayout::translate(NavElement& nav) -> void {
 
     mediaGroupLayout->setText( transInsert );
 
-    if (mediaGroup->isProgram())
-        mediaGroupLayout->inject.setText( trans->get("program_inject") );
-    else if (mediaGroup->isTape())
-        mediaGroupLayout->inject.setText( trans->get("tape spool") );
+    if (mediaGroup->isProgram()) {
+        mediaGroupLayout->control.inject.setText( trans->get("program_inject") );
+        mediaGroupLayout->control.save.setText( trans->get("program_creator") );
+    } else if (mediaGroup->isTape())
+        mediaGroupLayout->control.inject.setText( trans->get("tape spool") );
 
     for ( auto block : mediaGroupLayout->blocks ) {
         block->header.writeprotect.setText(trans->get("write_protected"));
@@ -1053,7 +1124,7 @@ auto MediaLayout::translate(NavElement& nav) -> void {
                 block->selector.open.setTooltip( trans->getA( "Final Chesscard ROMS tooltip" ) );
         }
         
-        if (mediaGroup->isExpansion() && !block->media->secondary) {
+        if (mediaGroup->isExpansion() && !block->media->parent) {
             unsigned id = 0;
             for( auto& pcb : mediaGroup->expansion->pcbs ) {
                 block->selector.combo.setText(id++, trans->get( pcb.name ));
@@ -1078,7 +1149,6 @@ auto MediaLayout::translate(NavElement& nav) -> void {
 
 auto MediaLayout::translate() -> void {
 
-    pathsLayout.setText( trans->get("paths") );
     moduleFrame.setText( trans->get("selection") );   
     bootCart.setText( trans->get("boot cartridge") );
     useTraps.setText( trans->get("VDT Autostart") );
@@ -1106,62 +1176,18 @@ auto MediaLayout::translate() -> void {
             nav.tvi->setText( trans->get( getMediaGroupTransIdent( nav.mediaGroup ) ) );
         else if (nav.layout && dynamic_cast<SwapperLayout*>(nav.layout))
             nav.tvi->setText( trans->get( emulator->getTapeMediaGroup() ? "swapper" : "disk swapper" ) );
-        else if (nav.layout && dynamic_cast<PathsLayout*>(nav.layout))
-            nav.tvi->setText( trans->get( "paths" ) );
-        else if ( nav.layout == &creatorLayout )
-            nav.tvi->setText( trans->get( "create" ) );
         else if ( nav.layout == &dialogPreviewLayout )
             nav.tvi->setText( trans->get( "File Dialog Preview" ) );
 
         if (nav.layout && nav.mediaGroup)
             translate(nav);
     }
-        
-    if (diskCreatorLayout) {        
-        diskCreatorLayout->setText( trans->get("disk_creator") );
 
-        diskCreatorLayout->formatName.setText(trans->get("format",{}, true));
-        diskCreatorLayout->options.fastFileSystem.setText(trans->get("ffs"));
-        diskCreatorLayout->options.highDensity.setText(trans->get("high_density"));
-        diskCreatorLayout->options.bootable.setText(trans->get("bootable"));
-        diskCreatorLayout->diskLabelName.setText(trans->get("disk label",{}, true));
-        diskCreatorLayout->insertLabel.setText(trans->get("insert",{}, true));
-        diskCreatorLayout->button.setText(trans->get("create"));
+    if (creatorWindow) {
+        creatorWindow->translate();
+        if (creatorWindow->visible())
+            creatorWindow->synchronizeLayout();
     }
-    
-    if (hdCreatorLayout) {
-        hdCreatorLayout->setText( trans->get("harddisk_creator") );
-        
-        hdCreatorLayout->creator.diskSizeLabel.setText( trans->get("size_in_mb", {}, true) );
-        hdCreatorLayout->creator.formatName.setText(trans->getA("format", true));
-        hdCreatorLayout->creator.button.setText( trans->get("create") );
-    }
-            
-    if (tapeCreatorLayout) {
-        tapeCreatorLayout->setText( trans->get("tape_creator") );
-        tapeCreatorLayout->insertLabel.setText(trans->get("insert",{}, true));
-        tapeCreatorLayout->button.setText(trans->get("create"));
-    }
-	
-	if (memoryCreatorLayout) {
-		memoryCreatorLayout->setText( trans->get("program_creator") );		
-        memoryCreatorLayout->button.setText(trans->get("create")); 
-	}
-    
-    if (flashCreatorLayout) {
-		flashCreatorLayout->setText( trans->get("flash_creator") );
-        flashCreatorLayout->button.setText(trans->get("create"));         
-    }
-
-	unsigned neededWidth = 90;
-	
-    for(auto block : pathsLayout.blocks) {        				
-        block->label.setText( trans->get( getMediaGroupTransIdent(block->mediaGroup) ) );
-		neededWidth = std::max(neededWidth, block->label.minimumSize().width );
-    }
-	
-	for(auto block : pathsLayout.blocks)	
-		block->update( block->label, { neededWidth, 0u }, 10 );	
         
     swapperLayout->translate();
 }
@@ -1253,8 +1279,15 @@ auto MediaLayout::insertImage( MediaGroupLayout::Block* block, GUIKIT::File* fil
     auto data = mediaGroup->isHardDisk() && !file->isArchived() ? nullptr
         : file->archiveData(item->id);
 
-    bool updateGenericFileList = !media->secondary;
-    if (!mediaGroup->isExpansion() || media->secondary) {
+    auto useExpansion = emulator->getExpansion();
+
+    auto insertedExpansion = emulator == activeEmulator && useExpansion && useExpansion->mediaGroup == mediaGroup;
+
+    bool mediaIsRam = media->type == Emulator::Interface::Media::MemoryType::RAM || media->type == Emulator::Interface::Media::MemoryType::SRAM;
+
+    bool updateGenericFileList = !media->parent && (mediaGroup->isProgram() || !mediaIsRam);
+
+    if (!mediaGroup->isExpansion() || (insertedExpansion && (mediaIsRam || (media->parent && (mediaGroup->selected == media->parent))))) {
         emulator->ejectMedium(media);
         fileloader->updateFileSetting(fSetting, file, item);
         media->guid = uintptr_t(file);
@@ -1268,7 +1301,9 @@ auto MediaLayout::insertImage( MediaGroupLayout::Block* block, GUIKIT::File* fil
             block->selector.combo.setSelection(0);
             block->selector.combo.onChange();
         }
-    } else {    
+
+        States::getInstance(emulator)->updateImage(fSetting, media);
+    } else {
         auto ext = GUIKIT::String::getExtension(file->getFile(), "bin");
         GUIKIT::String::toLowerCase(ext);
         if (ext != "crt")
@@ -1279,10 +1314,17 @@ auto MediaLayout::insertImage( MediaGroupLayout::Block* block, GUIKIT::File* fil
             block->selector.combo.onChange();
         }
         fileloader->updateFileSetting(fSetting, file, item);
+
+        States::getInstance(emulator)->forcePowerNextLoad = true;
     }
 
     auto recentFile = fileloader->getRecentFile(emulator);
-    recentFile->add(mediaGroup, media->secondary, GUIKIT::File::buildRelativePath(file->getFile()), updateGenericFileList);
+
+    if (!cmd->autoload) {
+        RecentFiles::FileIdent fI{GUIKIT::File::buildRelativePath(file->getFile()), fSetting->file, item->id};
+        recentFile->add(mediaGroup, media->parent != nullptr, fI, updateGenericFileList);
+    }
+
     if (view)
         view->updateRecentList(emulator);
 
@@ -1296,7 +1338,7 @@ auto MediaLayout::insertImage( MediaGroupLayout::Block* block, GUIKIT::File* fil
     if (view && !fromState && activeEmulator && mediaGroup->isTape())
         view->updateTapeIcons();
     
-    if (!dontUpdateSelected && mediaGroup->selected && !media->secondary && !block->header.inUse.checked() ) {
+    if (!dontUpdateSelected && mediaGroup->selected && !media->parent && !block->header.inUse.checked() ) {
         block->header.inUse.setChecked();
         layout->selectedBlock = block;
         layout->mediaGroup->selected = block->media;
@@ -1307,11 +1349,6 @@ auto MediaLayout::insertImage( MediaGroupLayout::Block* block, GUIKIT::File* fil
         filePool->assign( _ident(emulator, media->name + "store"), file);
 
     filePool->unloadOrphaned();
-
-    if (!mediaGroup->isExpansion())
-        States::getInstance(emulator)->updateImage(fSetting, media);
-    else
-        States::getInstance(emulator)->forcePowerNextLoad = true;
 
     updateMediaBlock(block, fSetting);
     
@@ -1458,10 +1495,8 @@ auto MediaLayout::drop( std::string filePath, MediaGroupLayout::Block* block ) -
     if (!file)
         return;
 
-    if (!file->exists())
-        return FileHelper::errorFileSize(MAX_MEDIUM_SIZE, file->getPath(), message);
-    if (!mediaGroup->isHardDisk() && !file->isSizeValid(MAX_MEDIUM_SIZE))
-        return FileHelper::errorFileSize(MAX_MEDIUM_SIZE, file->getPath(), message);
+    if (!file->exists() || !file->getSize())
+        return FileHelper::errorOpen(file, nullptr, message);
 
     auto& items = file->scanArchive();
 
@@ -1504,7 +1539,7 @@ auto MediaLayout::updateWriteProtection( Emulator::Interface::Media* media, bool
 }
 
 auto MediaLayout::updateJumper(Emulator::Interface::Media* media) -> void {
-    if (media->secondary)
+    if (media->parent)
         return;
 
     auto layout = getMediaGroupLayout(media->group);
@@ -1616,10 +1651,6 @@ auto MediaLayout::loadSettings() -> void {
     else if (selectedLayout && selectedLayout->mediaGroup->isTape())
         useTraps.setChecked( settings->get<bool>("use_tape_traps", false) );
 
-    auto pathBlock = pathsLayout.getBlockByName("disksave");
-    if (pathBlock)
-        pathBlock->edit.setText(settings->get<std::string>("disksave_folder", ""));
-
     for(auto& nav : navElements) {
         if (!nav.mediaGroup)
             continue;
@@ -1637,14 +1668,7 @@ auto MediaLayout::loadSettings() -> void {
         layout->loadSettings();
         
         auto mediaGroup = layout->mediaGroup;
-        
-        auto pathBlock = pathsLayout.getBlock( mediaGroup );
-        
-        auto settingFolderIdent = _underscoreEx(mediaGroup->name) + "_folder";
 
-        if (pathBlock)
-            pathBlock->edit.setText( settings->get<std::string>(settingFolderIdent, "") );
-                
         if (mediaGroup->isDrive())
             layout->updateVisibility(emulator->getModelValue( emulator->getModelIdOfEnabledDrives(mediaGroup) ), true );
         
@@ -1704,26 +1728,6 @@ auto MediaLayout::getBlock(Emulator::Interface::Media* media) -> MediaGroupLayou
                 return block;
         }
     }
-    return nullptr;
-}
-
-auto PathsLayout::getBlock(Emulator::Interface::MediaGroup* mediaGroup) -> PathsLayout::Block* {
-    
-    for(auto block : blocks) {
-        if (block->mediaGroup == mediaGroup)
-            return block;
-    }
-    
-    return nullptr;
-}
-
-auto PathsLayout::getBlockByName(const std::string& name) -> PathsLayout::Block* {
-
-    for (auto block : blocks) {
-        if (block->mediaGroup->name == name)
-            return block;
-    }
-
     return nullptr;
 }
 

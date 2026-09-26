@@ -9,7 +9,7 @@ namespace LIBC64 {
 
         }
 
-        auto writeIo1( uint16_t addr, uint8_t value ) -> void {
+        auto writeIo1( uint16_t addr, uint8_t value ) -> void override {
 
             if (((value & 3) == 1) || ((value & 3) == 2)) {
                 uint8_t bank = (value >> 4) & 3;
@@ -22,12 +22,12 @@ namespace LIBC64 {
             system->changeExpansionPortMemoryMode( exRom, game );
         }
 
-        auto reset(bool softReset = false) -> void {
+        auto reset(bool softReset = false) -> void override {
 
             cRomL = getChip(3);
         }
 
-        auto isBootable( ) -> bool { return false; }
+        auto isBootable( ) -> bool override { return false; }
 
     };
 

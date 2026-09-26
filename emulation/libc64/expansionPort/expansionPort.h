@@ -16,7 +16,7 @@ struct ExpansionPort {
         setId( Interface::ExpansionIdNone );
     }
     
-    virtual ~ExpansionPort() {}
+    virtual ~ExpansionPort() = default;
     
     struct {
         uint16_t addr;
@@ -133,9 +133,7 @@ struct ExpansionPort {
         s.integer( dma );
         s.integer( bus.addr );
     }
-	
-	virtual auto hasSecondaryRom() -> bool { return false; }
-    
+
     virtual auto memoryMapUpdated() -> void {} // for speed hacks ( expansion can not "directly" see, when CPU port is written)
 
     virtual auto hasHiramCableConnected() -> bool { return false; }

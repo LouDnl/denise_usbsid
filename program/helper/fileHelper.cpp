@@ -36,21 +36,8 @@ auto FileHelper::errorOpen( const std::vector<std::string>& paths, bool warning 
         view->message->error(trans->get(transKey, { {replaceIdent, replace} }));
 }
 
-auto FileHelper::errorFileSize(uint64_t maxSize, std::string filePath, Message* message) -> void {
-
-    message->error(trans->get("file_size_error", {
-        { "%path%", filePath},
-        { "%size%", GUIKIT::File::SizeFormated(maxSize)}
-        }));
-
-    filePool->unloadOrphaned();
-}
-
 auto FileHelper::loadImageDataWhenOk( GUIKIT::File* file, unsigned fileId, Emulator::Interface::MediaGroup* group, uint8_t*& data ) -> bool {
-    if (!file || !file->exists())
-        return false;
-
-    if (!group->isHardDisk() && !file->isSizeValid(MAX_MEDIUM_SIZE))
+    if (!file || !file->exists() || !file->getSize())
         return false;
 
     // non archived hard disk images will be loaded in chunks when needed
@@ -127,7 +114,7 @@ auto FileHelper::getAssignedSaveFile(Emulator::Interface::Media* media, bool cre
     auto fSetting = FileSetting::getInstance( activeEmulator, _underscore(media->name ) );
     if (!fSetting || fSetting->file.empty())
         return "";
-    auto path = generatedFolder(activeEmulator, "disksave_folder", "disksave", createFolder);
+    auto path = generatedFolder(activeEmulator, "disksave_folder", "disksave", createFolder ? FileHelper::FLAG_CREATE : 0);
     return path + fSetting->file + ".sav";
 }
 
@@ -138,6 +125,54 @@ auto FileHelper::truncateMedia(Emulator::Interface::Media* media) -> bool {
     auto file = (GUIKIT::File*)media->guid;
 
     return file->truncate();
+}
+
+auto FileHelper::isArchivedMedia(Emulator::Interface::Media* media) -> bool {
+    if (!activeEmulator || !media || !media->guid)
+        return false;
+
+    auto file = (GUIKIT::File*)media->guid;
+
+    return file->isArchived();
+}
+
+auto FileHelper::getFileFromArchive(Emulator::Interface::Media* media, unsigned id) -> Emulator::Interface::Data {
+    if (!activeEmulator || !media || !media->guid)
+        return {nullptr, 0};
+
+    auto file = reinterpret_cast<GUIKIT::File*>(media->guid);
+
+    auto items = file->scanArchive();
+
+    for (auto& item : items) {
+        file->freeArchiveData( item.id );
+    }
+
+    Emulator::Interface::Data data{};
+
+    data.ptr = file->archiveData( id );
+    data.size = file->archiveDataSize( id );
+
+    return data;
+}
+
+auto FileHelper::getFileList(Emulator::Interface::Media* media, const std::string& sub) -> std::vector<std::pair<unsigned, std::string>> {
+    if (!activeEmulator || !media || !media->guid)
+        return {};
+
+    auto file = (GUIKIT::File*)media->guid;
+
+    auto items = file->scanArchive();
+
+    std::vector<std::pair<unsigned, std::string>> result;
+
+    for (auto& item : items) {
+        if (item.parent)
+            continue;
+        result.push_back( {item.id, item.info.name} );
+    }
+
+    return result;
 }
 
 auto FileHelper::getFileNameFromMedia(Emulator::Interface::Media* media) -> std::string {
@@ -171,7 +206,7 @@ auto FileHelper::updateSaveIdent(Emulator::Interface::Media* media, FileSetting*
         return;
     }
 
-    if ( (media->group->isExpansion() && !media->group->expansion->isFastloader() && !media->group->expansion->isTurboCart() && !media->group->expansion->isRam() && !media->secondary)
+    if ( (media->group->isExpansion() && !media->group->expansion->isFastloader() && !media->group->expansion->isTurboCart() && !media->group->expansion->isRam() && !media->parent)
     || (!_media && !media->group->isProgram())
     || (media->group->isDisk() && !_media->group->isDisk() && !_media->group->isExpansion())
     || (media->group->isTape() && !_media->group->isDisk() && !_media->group->isExpansion())) {
@@ -254,19 +289,20 @@ auto FileHelper::updateSaveIdentFromSav( Emulator::Interface* emulator, GUIKIT::
         emuView->configurationsLayout->updateSaveIdent( fileName );
 }
 
-auto FileHelper::generatedFolder(const std::string& subPath, bool createFolder) -> std::string {
+auto FileHelper::generatedFolder(const std::string& subPath, unsigned flags) -> std::string {
     std::string _path;
     std::string _basePath;
 
     if (program->portable) {
         _path = "portable/" + subPath;
-        _basePath = program->installFolder();
+        if ((flags & FLAG_VIEW) == 0)
+            _basePath = program->installFolder();
     } else {
         _path = program->appFolder() + "/" + subPath; // may not be created and therefore should not be part of base path
         _basePath = program->userFolder();
     }
 
-    if (createFolder)
+    if ((flags & (FLAG_CREATE | FLAG_VIEW)) == FLAG_CREATE)
         GUIKIT::File::createDir(_path, _basePath); // creations starts at base path
 
     _path = _basePath + _path;
@@ -275,35 +311,37 @@ auto FileHelper::generatedFolder(const std::string& subPath, bool createFolder) 
     return GUIKIT::File::beautifyPath(_path);
 }
 
-auto FileHelper::generatedFolder(Emulator::Interface* emulator, const std::string& settingIdent, const std::string& subPath, bool createFolder) -> std::string {
+auto FileHelper::generatedFolder(Emulator::Interface* emulator, const std::string& settingIdent, const std::string& subPath, unsigned flags) -> std::string {
     std::string _path;
 
     if (!settingIdent.empty()) {
         auto settings = Program::getSettings(emulator);
         _path = settings->get<std::string>(settingIdent, "");
-        _path = GUIKIT::File::resolveRelativePath(_path);
+        if ((flags & FLAG_VIEW) == 0)
+            _path = GUIKIT::File::resolveRelativePath(_path);
     }
 
     if (_path.empty()) {
-        std::string _sub = "";
+        std::string _sub;
         if (!subPath.empty()) {
             std::string _emuIdent = emulator->ident;
             _sub = subPath + "/" + GUIKIT::String::toLowerCase(_emuIdent);
         }
-        return generatedFolder(_sub, createFolder);
+        return generatedFolder(_sub, flags);
     }
 
     return GUIKIT::File::beautifyPath(_path);
 }
 
-auto FileHelper::getSettingsFolder( Emulator::Interface* emulator, bool createFolder ) -> std::string {
+auto FileHelper::getSettingsFolder( Emulator::Interface* emulator, unsigned flags ) -> std::string {
     std::string _emuIdent = emulator->ident;
     auto path = globalSettings->get<std::string>( _emuIdent + "_settings_path", "");
 
     if (path.empty())
-        return generatedFolder("settings/" + GUIKIT::String::toLowerCase(_emuIdent), createFolder);
+        return generatedFolder("settings/" + GUIKIT::String::toLowerCase(_emuIdent), flags);
 
-    path = GUIKIT::File::resolveRelativePath(path);
+    if ((flags & FLAG_VIEW) == 0)
+        path = GUIKIT::File::resolveRelativePath(path);
 
     return GUIKIT::File::beautifyPath(path);
 }

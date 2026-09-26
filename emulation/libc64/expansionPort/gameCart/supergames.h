@@ -12,11 +12,11 @@ struct SuperGames : GameCart {
     bool writeProtect = false;
 	bool mafiosino = false; // fastloader
 	
-	auto isBootable( ) -> bool {
+	auto isBootable( ) -> bool override {
 		return !mafiosino;
 	}
 	
-    auto writeIo2( uint16_t addr, uint8_t value ) -> void {
+    auto writeIo2( uint16_t addr, uint8_t value ) -> void override {
         
         if (writeProtect)
             return;       
@@ -31,13 +31,13 @@ struct SuperGames : GameCart {
                 cRomL = &chip;
 				cRomH = &chip;
                 break;
-            }            
+            }
         }
         
 		writeProtect = !!(value & 8);
     }
     
-    auto reset(bool softReset = false) -> void {
+    auto reset(bool softReset = false) -> void override {
         cRomL = getChip(0);
         cRomH = getChip(0);
 
@@ -52,12 +52,12 @@ struct SuperGames : GameCart {
 		mafiosino = result != dataLast;
     }
 
-    auto assumeChips( ) -> void {
+    auto assumeChips( ) -> void override {
     
         Cart::assumeChips( {16384} );
     }    
     
-    auto serializeSwitchedIn(Emulator::Serializer& s) -> void {
+    auto serializeSwitchedIn(Emulator::Serializer& s) -> void override {
     
         Cart::serialize( s );
 

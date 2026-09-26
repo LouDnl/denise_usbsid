@@ -1,21 +1,27 @@
 
 #pragma once
 
-struct SliderLayout : GUIKIT::HorizontalLayout {    
+struct SliderLayout : GUIKIT::HorizontalLayout {
+    static constexpr unsigned ACTIVATOR = 1;
+    static constexpr unsigned DEFAULT_BUTTON = 2;
+    static constexpr unsigned SPACER = 4;
+
     GUIKIT::Label name;
     GUIKIT::CheckBox active;
     GUIKIT::Label value;
     GUIKIT::HorizontalSlider slider;
     GUIKIT::Button defaultButton;
+    GUIKIT::Widget spacer;
     
-    std::string unit = "";
+    std::string unit;
     bool withActivator = false;
-    bool withButton = false;   
-    
-    SliderLayout( std::string unit = "%", bool withActivator = false, bool withButton = false) {
-        this->withActivator = withActivator;
-        this->withButton = withButton;
+    bool withButton = false;
+
+    SliderLayout( const std::string& unit = "%", unsigned flags = 0) {
         this->unit = unit;
+        this->withActivator = !!(flags & ACTIVATOR);
+        this->withButton = !!(flags & DEFAULT_BUTTON);
+        bool withSpacer = !!(flags & SPACER);
 
         if (withActivator)
             append(active, {0u, 0u}, 10);
@@ -24,6 +30,9 @@ struct SliderLayout : GUIKIT::HorizontalLayout {
             
         append(value, {0u, 0u}, 8);
         append(slider, {~0u, 0u}, withButton ? 8 : 0 );
+
+        if (withSpacer)
+            append(spacer, {0u, ~0u});
         
         if (withButton)
             append(defaultButton, {0u, 0u});
@@ -32,7 +41,7 @@ struct SliderLayout : GUIKIT::HorizontalLayout {
     }
 
     auto setValue(std::string text) -> void {
-        if (unit == "")
+        if (unit.empty())
             value.setText( text );
         else
             value.setText( text + " " + unit );
@@ -77,4 +86,8 @@ struct SliderLayout : GUIKIT::HorizontalLayout {
         
         return neededWidth;
     }
+};
+
+struct SimpleSliderLayout : SliderLayout {
+    SimpleSliderLayout() : SliderLayout("") {}
 };

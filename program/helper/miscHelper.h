@@ -21,7 +21,7 @@ struct MiscHelper {
     static auto libraryMissing(std::string plugin) -> void;
     static auto initExpansionRom(Emulator::Interface* emulator, const std::string& ident, const std::string& file) -> void;
     static auto setExpansionSelection( Emulator::Interface* emulator ) -> void;
-    static auto removeExpansion( bool bootableOnly = true ) -> void;
+    static auto removeExpansion( Emulator::Interface* emulator, bool bootableOnly = false ) -> void;
     static auto prepareSocket(Emulator::Interface::Media* media, Emulator::Interface* emulator, std::string address) -> void;
     static auto toggle2Mhz() -> void;
     static auto hasSuperCpuActive() -> bool;
@@ -32,5 +32,14 @@ struct MiscHelper {
     static auto getFont(uint16_t ident) -> DisplayFont*;
     static auto getFont(const std::string& file, int fontIndex) -> DisplayFont*;
     static auto removeFont(const std::string& file, uint8_t mode) -> bool;
+
+    static auto resetRunAhead() -> void;
+    static auto setRunAhead(Emulator::Interface* emulator) -> void;
+    static auto setRewind(Emulator::Interface* emulator) -> void;
+    static auto setJit(Emulator::Interface* emulator) -> void;
+    static auto getDevice( Emulator::Interface* emulator, Emulator::Interface::Connector* connector ) -> Emulator::Interface::Device*;
+
+    static auto applyGeometry(GUIKIT::Window* window, GUIKIT::Settings* settings, const std::string& ident, GUIKIT::Geometry defGeo) -> void;
+    static auto centerGeometry(GUIKIT::Window* window, GUIKIT::Size _size, GUIKIT::Geometry _containerGeo) -> void;
 };
 

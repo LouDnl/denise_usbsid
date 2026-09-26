@@ -633,7 +633,7 @@ ConfigurationsLayout::ConfigurationsLayout(TabWindow* tabWindow)
             fileName = info->name;
         }
 
-        std::string path = FileHelper::getSettingsFolder(emulator, true) + fileName;
+        std::string path = FileHelper::getSettingsFolder(emulator, FileHelper::FLAG_CREATE) + fileName;
 
         GUIKIT::File file(path);
 
@@ -649,7 +649,7 @@ ConfigurationsLayout::ConfigurationsLayout(TabWindow* tabWindow)
     };
 
     settings.control.create.onActivate = [this]() {
-        const std::string basePath = FileHelper::getSettingsFolder(emulator, true);
+        const std::string basePath = FileHelper::getSettingsFolder(emulator, FileHelper::FLAG_CREATE);
 
         std::string filePath = GUIKIT::BrowserWindow()
             .setWindow(*this->tabWindow)
@@ -671,7 +671,7 @@ ConfigurationsLayout::ConfigurationsLayout(TabWindow* tabWindow)
 
         GUIKIT::File file(filePath);
 
-        if (file.exists()) {
+        if (!GUIKIT::Application::isCocoa() && file.exists()) {
             if (!mes->question(trans->get("file_exist_error", { {"%path%", filePath} })))
                 return;
         }
@@ -780,7 +780,7 @@ ConfigurationsLayout::ConfigurationsLayout(TabWindow* tabWindow)
 
         globalSettings->set<std::string>( emulator->ident + "_settings_path", "" );
 
-        settingsFolder.pathEdit.setText(FileHelper::getSettingsFolder(emulator));
+        settingsFolder.pathEdit.setText(FileHelper::getSettingsFolder(emulator, FileHelper::FLAG_VIEW));
 
         settingsFolder.pathEdit.setEnabled(false);
 
@@ -943,6 +943,13 @@ ConfigurationsLayout::ConfigurationsLayout(TabWindow* tabWindow)
         if (GUIKIT::String::getExtension(fn, "") == "")
             filePath += ".sav";
 
+        {   GUIKIT::File file(filePath);
+            if (!GUIKIT::Application::isCocoa() && file.exists()) {
+                if (!mes->question(trans->get("file_exist_error", { {"%path%", filePath} })))
+                    return;
+            }
+        }
+
         path = GUIKIT::File::buildRelativePath(GUIKIT::File::getPath(filePath));
         _settings->set<std::string>("save_direct_folder", path);
 
@@ -967,7 +974,7 @@ ConfigurationsLayout::ConfigurationsLayout(TabWindow* tabWindow)
 
     stateFolder.standard.onActivate = [this]() {
         _settings->set<std::string>("states_folder", "");
-        stateFolder.pathEdit.setText(FileHelper::generatedFolder(emulator, "states_folder", "states"));
+        stateFolder.pathEdit.setText(FileHelper::generatedFolder(emulator, "states_folder", "states", FileHelper::FLAG_VIEW));
         stateFolder.pathEdit.setEnabled(false);
     };
 
@@ -1056,6 +1063,8 @@ auto ConfigurationsLayout::load( std::string path, bool showError ) -> bool {
             }));
         return false;
     }
+
+    SettingsHelper::unsetObsoleteConfigs( _settings, this->emulator );
 
     program->initEmulator(this->emulator);
 
@@ -1222,11 +1231,11 @@ auto ConfigurationsLayout::loadSettings() -> void {
 
 auto ConfigurationsLayout::updateStorePaths() -> void {
     std::string _statesFolder = _settings->get<std::string>("states_folder", "");
-    stateFolder.pathEdit.setText(FileHelper::generatedFolder(emulator, "states_folder", "states"));
+    stateFolder.pathEdit.setText(FileHelper::generatedFolder(emulator, "states_folder", "states", FileHelper::FLAG_VIEW));
     stateFolder.pathEdit.setEnabled(!_statesFolder.empty());
 
     std::string _settingsFolder = globalSettings->get<std::string>(emulator->ident + "_settings_path", "");
-    settingsFolder.pathEdit.setText(FileHelper::getSettingsFolder(emulator));
+    settingsFolder.pathEdit.setText(FileHelper::getSettingsFolder(emulator, FileHelper::FLAG_VIEW));
     settingsFolder.pathEdit.setEnabled(!_settingsFolder.empty());
 }
 

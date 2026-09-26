@@ -4,18 +4,19 @@
 #include "../../emulation/interface.h"
 #include "../../driver/tools/shaderpass.h"
 
-#define VPARAMS _useSpectrum, _crtMode, _region, _useInterlace, _interlace, \
+#define VPARAMS _useSpectrum, _legacyCrtMode, _region, _useInterlace, _interlace, \
     _saturation, _contrast, _gamma, _brightness, _phase, _usePhaseError, _phaseError,  \
     _newLuma, _hanoverBars, _useHanoverBars, \
     _useBlur, _blur, _useScanlines, _scanlines, _useLumaRise, _lumaRise, _useLumaFall, _lumaFall
 
-#define VPARAMST unsigned, unsigned, unsigned, bool, unsigned, \
+#define VPARAMST unsigned, bool, unsigned, bool, unsigned, \
     unsigned, unsigned, unsigned, unsigned, int, bool, float, \
     bool, int, bool, \
     bool, unsigned, bool, unsigned, bool, float, bool, float
 
 struct ShaderParser;
 struct DmaColor;
+struct SCVideo;
 
 namespace GUIKIT {
     struct Settings;
@@ -72,7 +73,7 @@ struct VideoManager {
 
     static uint8_t frameRenderPos;
     static uint8_t frameRenderTrigger;
-    static bool needAUpdate;
+    static bool needUpdateForAllInstances;
     static unsigned takeScreenShots;
 
     static auto setFrameRender(uint8_t limit) -> void;
@@ -80,7 +81,8 @@ struct VideoManager {
     static auto setHardSync() -> void;
     static auto unloadDataStorage() -> void;
 
-    enum class CrtMode : unsigned { None = 0u, Cpu = 1u, Gpu = 2u } crtMode;
+    bool legacyCRTonCPU;
+    bool suppressShaderByHotkey;
 
     struct DataUpdates {
         std::string ident;
@@ -96,22 +98,7 @@ struct VideoManager {
     unsigned softwareViewForegroundColorRef;
     unsigned softwareViewBackgroundColorRef;
 
-    struct Render {        
-        unsigned width;
-        unsigned height;
-        const uint8_t* src;
-        unsigned srcPitch;
-        unsigned* dest;
-        unsigned destPitch;
-        unsigned* scanlineDest;
-        unsigned* fieldDest;
-        uint8_t oddLine;
-        unsigned options = 0;
-    } render;
-
-    uint32_t* tempDest = nullptr;
-    ColorLumaChroma delayLine[ 1024 ];
-	ColorRgb lineBefore[ 1024 ];
+    SCVideo* scVideo;
     
     Emulator::Interface* emulator;
     GUIKIT::Settings* settings;
@@ -146,16 +133,8 @@ struct VideoManager {
     double lumaRise;
     double lumaFall;
 
-    uint8_t preCalcGamma[256 * 3];
-    uint8_t preCalcScanline[512 * 3];
-
-    int32_t preCalcLumaCenter[0xffff + 1];
-    int32_t preCalcLumaNeighbour[0xffff + 1];
-    
     unsigned colorCount;
     ColorLumaChroma* lumaChromaTable = nullptr;
-    ColorLumaChroma* evenTable = nullptr;
-    ColorLumaChroma* oddTable = nullptr;
 
     DmaColor* dmaColors = nullptr;
 
@@ -181,7 +160,6 @@ struct VideoManager {
     template<typename T, bool interlace = false, bool field = false> auto renderToRgbWithDma(unsigned width, unsigned height, const T* src, unsigned srcPitch, unsigned* dest, unsigned destPitch) -> void;
     template<typename T> auto renderToScreenshot(unsigned width, unsigned height, const T* src, unsigned srcPitch, uint8_t* dest, uint8_t _options) -> void;
     template<typename T, uint8_t options = 0> auto renderFrame(const T* src, unsigned width, unsigned height, unsigned srcPitch) -> void;
-    template<typename T, uint8_t options = 0> auto renderCrt(unsigned width, unsigned height, const T* src, unsigned srcPitch, unsigned* dest, unsigned destPitch, unsigned& cropTop ) -> void;
     template<uint8_t options> auto getRenderOptions() -> unsigned;
     auto convertYUVToRGB(ColorRgb* dest, ColorLumaChroma* src, bool odd) -> void;
     auto convertYIQToRGB(ColorRgb* dest, ColorLumaChroma* src, bool odd) -> void;
@@ -195,23 +173,16 @@ struct VideoManager {
     auto convertLumaChromaToRGB() -> void;
     static auto normalizeColorSpectrumPalGamma( double& color ) -> void;
     auto updateListingColors() -> void;
-    auto injectPhaseTransferError() -> void;
-    auto convertLumaChromaToInteger() -> void;
     auto convertPaletteToLumaChroma() -> void;
-    auto calculateGamma() -> void;
-    auto calculateLumaDelay() -> void;
-    template<uint8_t options, typename T> auto renderPalCrt() -> void;
-    template<uint8_t options, typename T> auto renderNtscCrt() -> void;
     auto powerOff() -> void;
 
     static auto getInstance( Emulator::Interface* emulator ) -> VideoManager*;
 	static auto updateAll() -> void;
     auto useLumaDelay() -> bool;
-    auto useRegionEncoding() -> bool;
     // seter props
     auto usePal(bool state) -> void; // pal or ntsc
     auto useColorSpectrum(unsigned state) -> void; // color spectrum or palette
-    auto setCrtMode(CrtMode _mode) -> void;
+    auto setLegacyCrtMode(bool state) -> void;
     
     auto setSaturation(unsigned saturation) -> void;
     auto setBrightness(unsigned brightness) -> void;
@@ -232,7 +203,7 @@ struct VideoManager {
     auto reloadSettings(bool reloadPreset) -> void;
     auto getSettings() -> std::tuple<VPARAMST>;   
     auto resetSettings() -> void;
-    auto getModeIdent() -> std::string;
+    auto resetLegacySettings() -> void;
     auto applyMeta() -> void;
 
     auto updateData(int offset, float data) -> void;
@@ -264,9 +235,10 @@ struct VideoManager {
     auto translateShaderBufferType(ShaderPreset::BufferType& bufferType) -> const std::string;
     auto getColorSpectrum(unsigned id, unsigned col) -> C64ColorSpectrum&;
     auto lumaChromaMode() -> bool;
-
+    auto sampleLuma(unsigned width, unsigned height, const uint8_t* src, unsigned srcPitch) -> void;
     auto fetchShader(ShaderPreset::Pass& pass, unsigned passId) -> bool;
     template<typename T> auto takeScreenshot(unsigned unscaled, const T* _src, unsigned _width, unsigned _height, unsigned _pitch, uint8_t _options) -> void;
+    auto toggleShaderTemporary() -> bool;
 };
 
 extern std::vector<VideoManager*> videoManagers;

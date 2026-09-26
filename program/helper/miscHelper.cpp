@@ -10,6 +10,7 @@
 #include "../tools/filepool.h"
 #include "../emuconfig/config.h"
 #include "../emuconfig/layouts/system.h"
+#include "../emuconfig/layouts/misc.h"
 #include "../states/states.h"
 #include "fileHelper.h"
 #include "settingsHelper.h"
@@ -178,7 +179,7 @@ auto MiscHelper::setExpansionSelection( Emulator::Interface* emulator ) -> void 
 
             auto media = emulator->getMedia( mediaGroup, mediaId );
 
-            if (media && !media->secondary)
+            if (media && !media->parent)
                 mediaGroup.selected = media;
         }
 
@@ -200,7 +201,7 @@ auto MiscHelper::setExpansionSelection( Emulator::Interface* emulator ) -> void 
 
         for(auto& media : expansion.mediaGroup->media) {
 
-            if (!media.pcbLayout || media.secondary) {
+            if (!media.pcbLayout || media.parent) {
                 continue;
             }
 
@@ -213,42 +214,20 @@ auto MiscHelper::setExpansionSelection( Emulator::Interface* emulator ) -> void 
     }
 }
 
-auto MiscHelper::removeExpansion( bool bootableOnly ) -> void {
-    if (!activeEmulator)
+auto MiscHelper::removeExpansion( Emulator::Interface* emulator, bool bootableOnly ) -> void {
+    if (bootableOnly && !emulator->isExpansionBootable())
         return;
 
-    if (bootableOnly && !activeEmulator->isExpansionBootable())
-        return;
-
-    auto expansion = activeEmulator->getExpansion();
+    auto expansion = emulator->getExpansion();
 
     if (!expansion || expansion->isEmpty())
         return;
 
-    auto medias = expansion->mediaGroup->media;
-    if (expansion->mediaGroupExpanded)
-        medias = GUIKIT::Vector::concat( medias, expansion->mediaGroupExpanded->media );
+    Program::getSettings( emulator )->set<unsigned>("expansion", 0);
 
-    for( auto& media : medias) {
-        filePool->assign( _ident(activeEmulator, media.name), nullptr);
-        activeEmulator->ejectMedium( &media );
-        auto state = States::getInstance( activeEmulator );
-        if (state)
-            state->updateImage( nullptr, &media );
-    }
-
-    activeEmulator->unsetExpansion();
-
-    Program::getSettings( activeEmulator )->set<unsigned>("expansion", 0);
-
-    auto emuView = EmuConfigView::TabWindow::getView(activeEmulator);
-    if (emuView && emuView->systemLayout)
-        emuView->systemLayout->setExpansion( nullptr );
-
-    if (activeEmulator) {
-        activeEmulator->powerOff();
-        activeEmulator->power();
-    }
+     auto emuView = EmuConfigView::TabWindow::getView(emulator);
+     if (emuView && emuView->systemLayout)
+         emuView->systemLayout->setExpansion( nullptr );
 }
 
 auto MiscHelper::prepareSocket(Emulator::Interface::Media* media, Emulator::Interface* emulator, std::string address) -> void {
@@ -292,4 +271,120 @@ auto MiscHelper::hasSuperCpuActive() -> bool {
             return true;
     }
     return false;
+}
+
+auto MiscHelper::centerGeometry(GUIKIT::Window* window, GUIKIT::Size _size, GUIKIT::Geometry _containerGeo) -> void {
+    _size.width = GUIKIT::Font::scale( _size.width );
+    _size.height = GUIKIT::Font::scale( _size.height );
+
+    if (_size.width >= _containerGeo.width)
+        _size.width = _containerGeo.width;
+
+    if (_size.height >= _containerGeo.height)
+        _size.height = _containerGeo.height;
+
+    GUIKIT::Position pos;
+    pos.x = _containerGeo.x + static_cast<int>(_containerGeo.width - _size.width) / 2;
+    pos.y = _containerGeo.y + static_cast<int>(_containerGeo.height - _size.height) / 2;
+
+    GUIKIT::Geometry geo(pos, _size);
+
+    window->setGeometry( geo );
+}
+
+auto MiscHelper::applyGeometry(GUIKIT::Window* window, GUIKIT::Settings* settings, const std::string& ident, GUIKIT::Geometry defGeo) -> void {
+    defGeo.width = GUIKIT::Font::scale( defGeo.width );
+    defGeo.height = GUIKIT::Font::scale( defGeo.height );
+
+    if (defGeo.x < 0)
+        defGeo.x = -(int)GUIKIT::Font::scale( defGeo.x * -1 );
+    else
+        defGeo.x = (int)GUIKIT::Font::scale( defGeo.x );
+
+    if (defGeo.y < 0)
+        defGeo.y = -(int)GUIKIT::Font::scale( defGeo.y * -1 );
+    else
+        defGeo.y = (int)GUIKIT::Font::scale( defGeo.y );
+
+    if (settings) {
+        GUIKIT::Geometry geometry = {
+            settings->get<int>( ident + "_x", defGeo.x)
+            ,settings->get<int>(ident + "_y", defGeo.y)
+            ,settings->get<unsigned>(ident + "_width", defGeo.width)
+            ,settings->get<unsigned>(ident + "_height", defGeo.height)
+        };
+
+        window->setGeometry(geometry);
+    }
+
+    if (!settings || window->isOffscreen())
+        window->setGeometry(defGeo);
+}
+
+auto MiscHelper::resetRunAhead() -> void {
+
+    auto settings = Program::getSettings( activeEmulator );
+
+    if ( settings->get<bool>( "runahead_disable", true) ) {
+
+        settings->set<unsigned>( "runahead", 0);
+
+        activeEmulator->runAhead( 0 );
+
+        auto emuView = EmuConfigView::TabWindow::getView( activeEmulator );
+
+        if (emuView && emuView->miscLayout)
+            emuView->miscLayout->setRunAhead( 0, false );
+    }
+}
+
+auto MiscHelper::setRunAhead(Emulator::Interface* emulator) -> void {
+
+    auto settings = Program::getSettings( emulator );
+
+    emulator->runAhead( settings->get<unsigned>( "runahead", 0, {0u, 10u}) );
+
+    emulator->runAheadPerformance( settings->get<bool>( "runahead_performance", dynamic_cast<LIBAMI::Interface*>(emulator)) );
+
+    emulator->runAheadPreventJit( settings->get<bool>( "runahead_prevent_jit", true ) );
+}
+
+auto MiscHelper::setRewind(Emulator::Interface* emulator) -> void {
+    auto settings = Program::getSettings( emulator );
+
+    bool rewindEnable = settings->get<bool>("rewind_enable", false);
+    unsigned rewindStep = settings->get<unsigned>("rewind_step", 1, {1, 60});
+    unsigned rewindBuffer = settings->get<unsigned>("rewind_buffer", 100, {10, 500});
+
+    emulator->configRewind(rewindEnable ? rewindStep : 0, rewindBuffer);
+}
+
+auto MiscHelper::setJit(Emulator::Interface* emulator) -> void {
+
+    auto settings = Program::getSettings(emulator);
+
+    emulator->setInputSampling( settings->get<unsigned>("input_sampling", 2, {0, 2}) );
+
+    auto manager = InputManager::getManager(emulator);
+
+    manager->jit.rescanDelay = settings->get<unsigned>("input_jit_delay", 5, {1, 10});
+}
+
+auto MiscHelper::getDevice( Emulator::Interface* emulator, Emulator::Interface::Connector* connector ) -> Emulator::Interface::Device* {
+    unsigned defaultDevice = 0;
+
+    for(auto& device : emulator->devices) {
+        if (device.isJoypad() && connector->isPort2()) {
+            defaultDevice = device.id;
+            break;
+        }
+        if (device.isMouse() && dynamic_cast<LIBAMI::Interface*>( emulator ) && connector->isPort1()) {
+            defaultDevice = device.id;
+            break;
+        }
+    }
+
+    auto deviceId = Program::getSettings(emulator)->get<unsigned>( _underscore(connector->name), defaultDevice);
+
+    return emulator->getDevice( deviceId );
 }

@@ -184,6 +184,10 @@ auto Window::hasAppended(Widget& widget) -> bool {
     return widget.Sizable::state.window == this;
 }
 
+auto Window::hasAppended(Layout& layout) -> bool {
+    return state.layout == &layout;
+}
+
 auto Window::append(Widget& widget) -> void {
     widget.Sizable::state.window = this;
     p.append(widget);
@@ -220,6 +224,13 @@ auto Window::remove(Layout& layout) -> void {
     p.remove(layout);
     layout.reset();
     layout.Sizable::state.window = nullptr;
+}
+
+auto Window::removeActiveLayout() -> void {
+    if (!state.layout)
+        return;
+    auto& layout = *state.layout;
+    remove(layout);
 }
 
 auto Window::addCustomFont( CustomFont& customFont ) -> bool {
@@ -953,8 +964,8 @@ auto ComboButton::append(const std::string& text, int userData, const std::strin
     std::string _text = text;
     unsigned ident = 1;
     while (hasDuplicate(_text)) {
-        fprintf(stderr, "combo duplicate: %s\n", _text.c_str());
         _text = text + "_" + std::to_string(ident++);
+        // fprintf(stderr, "combo duplicate: %s\n", _text.c_str());
     }
     
     Entry entry{_text, userData, font};
@@ -974,8 +985,8 @@ auto ComboButton::appendMulti(std::vector<Entry>& rows, bool clearBefore) -> voi
         std::string _text = entry.text;
         
         while (hasDuplicate(_text)) {
-            fprintf(stderr, "combo multi insert duplicate: %s\n", _text.c_str());
             _text = entry.text + "_" + std::to_string(ident++);
+            // fprintf(stderr, "combo multi insert duplicate: %s\n", _text.c_str());
         }
         entry.text = _text;
         
@@ -1090,6 +1101,13 @@ auto ComboButton::userData(unsigned selection) const -> int {
     auto& entry = state.rows[selection];
 
     return entry.userData;
+}
+
+auto ComboButton::getEntry(unsigned selection) -> Entry* {
+    if(selection >= rowCount())
+        return nullptr;
+
+    return &state.rows[selection];
 }
 
 auto ComboButton::setDroppable(bool droppable) -> void {
@@ -1567,8 +1585,9 @@ auto MenuBase::setVisible(bool visible) -> void {
     p.setVisible(visible);
 }
 
-auto MenuBase::setFilePath(const std::string& path) -> void {
+auto MenuBase::setFileIdent(const std::string& path, unsigned ident) -> void {
     state.filePath = path;
+    state.fileId = ident;
 }
 
 auto MenuBase::setText(const std::string& text) -> void {

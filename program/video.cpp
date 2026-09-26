@@ -98,13 +98,13 @@ auto Program::initVideo(bool driverChange) -> void {
         std::string cacheFile = GUIKIT::String::getFileName(diskFile.path);
 
         if (diskFile.data && diskFile.size) {
-            std::string absPath = FileHelper::generatedFolder(subPath, true) + cacheFile;
+            std::string absPath = FileHelper::generatedFolder(subPath, FileHelper::FLAG_CREATE) + cacheFile;
             GUIKIT::File f(absPath, true);
 
             if (f.open(GUIKIT::File::Mode::Write))
                 f.write(diskFile.data, diskFile.size);
         } else {
-            std::string absPath = FileHelper::generatedFolder(subPath, false) + cacheFile;
+            std::string absPath = FileHelper::generatedFolder(subPath, 0) + cacheFile;
             GUIKIT::File f(absPath, true);
 
             if (f.open()) {
@@ -263,17 +263,6 @@ auto Program::getVideoDriver() -> std::string {
 		if(curDriver == driver) return driver;
 	}
 	return DRIVER::Video::preferred();
-}
-
-auto Program::activateGPU(Emulator::Interface* emulator, bool state) -> void {
-    auto vManager = VideoManager::getInstance( emulator );
-    bool shaderActive = vManager->crtMode == VideoManager::CrtMode::Gpu;
-
-    if (state != shaderActive) {
-        auto settings = Program::getSettings(emulator);
-        settings->set<unsigned>("video_crt", state ? (unsigned)VideoManager::CrtMode::Gpu : (unsigned)VideoManager::CrtMode::None);
-        vManager->reloadSettings(true);
-    }
 }
 
 auto Program::videoRefresh(const uint16_t* frame, unsigned width, unsigned height, unsigned linePitch, uint8_t options) -> void {
@@ -634,18 +623,15 @@ auto Program::setRotation() -> void {
 
 auto Program::checkShaderSupport(Emulator::Interface* emulator) -> void {
     auto emuView = EmuConfigView::TabWindow::getView(emulator);
+    bool support = videoDriver->shaderSupport();
 
-    if (videoDriver->shaderSupport()) {
-        if (emuView && emuView->presentationLayout)
-            emuView->presentationLayout->addShaderUI();
-        return;
+    if (emuView && emuView->presentationLayout) {
+        emuView->presentationLayout->setShaderVisible(support);
+        emuView->presentationLayout->setModuls();
     }
 
-    auto settings = Program::getSettings( emulator );
-    auto crtMode = settings->get<unsigned>("video_crt", (unsigned)VideoManager::CrtMode::None, {0u, 2u});
-
-    if ((VideoManager::CrtMode)crtMode == VideoManager::CrtMode::Gpu)
-        settings->set<unsigned>("video_crt", (unsigned)VideoManager::CrtMode::None);
+    if (support)
+        return;
 
     auto vManager = VideoManager::getInstance(emulator);
 

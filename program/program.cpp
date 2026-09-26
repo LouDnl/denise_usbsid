@@ -21,6 +21,7 @@
 #include "helper/miscHelper.h"
 #include "helper/settingsHelper.h"
 #include "emuconfig/layouts/presentation.h"
+#include "emuconfig/layouts/input.h"
 
 #include "debugger/cpuDebugger.h"
 #include "debugger/scpuDebugger.h"
@@ -67,8 +68,6 @@ InputManager* activeInputManager = nullptr;
 bool Program::focused = false;
 
 #include "video.cpp"
-#include "audio.cpp"
-#include "input.cpp"
 
 int main(int argc, char** argv) {  
     cmd = new Cmd(argc, argv);
@@ -145,8 +144,8 @@ Program::Program() {
 }
 
 auto Program::finishStartup() -> void {
-    initInput();
-    initAudio();
+    InputManager::initDriver();
+    AudioManager::initDriver();
     initVideo();
 
     if (cmd->recommendPlaceholder())
@@ -160,6 +159,10 @@ auto Program::finishStartup() -> void {
     Socket::init();
     if (cmd->binaryMonitor) {
         binaryMonitor.setServer( cmd->binaryMonitorAddress );
+        if (cmd->initbreak) {
+            if (binaryMonitor.checkForClientToAccept(1000))
+                binaryMonitor.initBreak();
+        }
     }
 
     if (!activeEmulator)
@@ -249,10 +252,10 @@ auto Program::init() -> void {
 auto Program::initEmulator( Emulator::Interface* emulator ) -> void {
     auto _settings = getSettings(emulator);
 
-    setJit(emulator);
+    MiscHelper::setJit(emulator);
 
     for (auto& connector : emulator->connectors)
-        emulator->connect(&connector, getDevice(emulator, &connector));
+        emulator->connect(&connector, MiscHelper::getDevice(emulator, &connector));
     
     for (auto& model : emulator->models)
         emulator->setModelValue( model.id, _settings->get<int>( _underscore(model.name), model.defaultValue, model.range) );
@@ -267,9 +270,9 @@ auto Program::initEmulator( Emulator::Interface* emulator ) -> void {
     
     MiscHelper::setExpansionSelection( emulator );
 
-    setRunAhead( emulator );
+    MiscHelper::setRunAhead( emulator );
 
-    setRewind( emulator );
+    MiscHelper::setRewind( emulator );
 
     if (dynamic_cast<LIBC64::Interface*>( emulator )) {
         setMemoryPattern( emulator );
@@ -327,8 +330,12 @@ auto Program::power( Emulator::Interface* emulator, bool regular ) -> void {
 
         for(auto& media : mediaGroup.media) {
             
-            if (selectedMedia && !media.secondary && (selectedMedia != &media) )
+            if (selectedMedia && !media.parent && (selectedMedia != &media) )
                 // only one media element at a time can be used for this group
+                continue;
+
+            if (selectedMedia && media.parent && (selectedMedia != media.parent) )
+                // only secondary and tertiary for this media element
                 continue;
             
             auto fSetting = FileSetting::getInstance( emulator, _underscore( media.name ) );
@@ -402,7 +409,7 @@ auto Program::power( Emulator::Interface* emulator, bool regular ) -> void {
 
 	    Debugger::reset();
 
-		resetRunAhead();
+		MiscHelper::resetRunAhead();
 
 		archiveViewer->setVisible(false);
 		view->setCursor( activeEmulator );
@@ -432,7 +439,7 @@ auto Program::power( Emulator::Interface* emulator, bool regular ) -> void {
 auto Program::reset( Emulator::Interface* emulator ) -> void {
     if (activeEmulator == emulator) {
         emulator->reset();
-        resetRunAhead();
+        MiscHelper::resetRunAhead();
     } else
         power(emulator);
 }
@@ -443,6 +450,8 @@ auto Program::powerOff() -> void {
         activeEmulator->powerOff();
         
         for(auto& mediaGroup : activeEmulator->mediaGroups) {
+            auto selectedMedia = mediaGroup.selected;
+
             for(auto& media : mediaGroup.media) {
                 
                 if (media.guid) {
@@ -456,7 +465,12 @@ auto Program::powerOff() -> void {
                 }                        
                 
                 filePool->assign( _ident(activeEmulator, media.name), nullptr);
-                activeEmulator->ejectMedium( &media );
+
+                if (!selectedMedia
+                    || (!media.parent && (selectedMedia == &media))
+                    || (media.parent && (selectedMedia == media.parent))
+                )
+                    activeEmulator->ejectMedium( &media );
 				
 				if (!cmd->noGui)
 					States::getInstance( activeEmulator )->updateImage( nullptr, &media );
@@ -539,8 +553,15 @@ auto Program::loopUserInterface() -> void {
     emuThread->handleStatusUpdate();
     emuThread->handleUIEvents();
 
-    if (binaryMonitor.clientConnected()) {
-        binaryMonitor.update();
+    if (binaryMonitor.serverRunning()) {
+        if (!binaryMonitor.clientConnected()) {
+            if (binaryMonitor.checkForClientToAccept()) {
+                if (cmd->initbreak)
+                    binaryMonitor.initBreak();
+                binaryMonitor.update();
+            }
+        } else
+            binaryMonitor.update();
     }
 }
 
@@ -1029,6 +1050,50 @@ auto Program::truncateMedia(Emulator::Interface::Media* media) -> bool {
     return FileHelper::truncateMedia( media );
 }
 
+auto Program::isArchivedMedia(Emulator::Interface::Media* media) -> bool {
+    return FileHelper::isArchivedMedia( media );
+}
+
+auto Program::getFileFromArchive(Emulator::Interface::Media* media, unsigned id) -> Emulator::Interface::Data {
+    return FileHelper::getFileFromArchive(media, id);
+}
+
+auto Program::getFileList(Emulator::Interface::Media* media, const std::string& sub) -> std::vector<std::pair<unsigned, std::string>> {
+    return FileHelper::getFileList( media, sub );
+}
+
 auto Program::libraryMissing(std::string plugin) -> void {
     MiscHelper::libraryMissing(plugin);
+}
+
+auto Program::jitPoll(int delay) -> bool {
+    if (cmd->noGui)
+        return false;
+
+    return InputManager::jitPoll(delay);
+}
+
+auto Program::inputPoll( uint16_t deviceId, uint16_t inputId) -> int16_t {
+    auto guid = activeEmulator->devices[deviceId].inputs[inputId].guid;
+    auto mapping = (InputMapping*)guid;
+    if(mapping)
+        return mapping->state;
+
+    return 0;
+}
+
+auto Program::audioSample(int16_t sampleLeft, int16_t sampleRight) -> void {
+    audioManager->process( sampleLeft, sampleRight );
+}
+
+auto Program::audioFlush() -> void {
+    if (audioManager->bufferPos)
+        audioManager->flush();
+}
+
+auto Program::mixDriveSound( Emulator::Interface::Media* media, Emulator::Interface::DriveSound driveSound, bool alternate, uint8_t data ) -> void {
+    if (cmd->noDriver || cmd->debug)
+        return;
+
+    audioManager->mixDriveSound( media, driveSound, alternate, data );
 }

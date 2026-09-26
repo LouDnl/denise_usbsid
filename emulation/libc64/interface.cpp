@@ -27,7 +27,7 @@
 
 namespace LIBC64 {
 
-const std::string Interface::Version = "233";
+const std::string Interface::Version = "234";
     
 Interface::Interface() : Emulator::Interface( "C64" ) {
     
@@ -47,161 +47,164 @@ Interface::~Interface() {
 }
 
 auto Interface::prepareMedia() -> void {
-	mediaGroups.push_back({MediaGroupIdDisk, "Disk", MediaGroup::Type::Disk, {"d64", "g64", "p64", "d71", "g71", "p71", "d81", "g81", "p81"}, {"d64", "g64", "p64", "d71", "g71", "p71", "d81", "g81", "p81"} });
-	mediaGroups.push_back({MediaGroupIdTape, "Tape", MediaGroup::Type::Tape, {"tap"}, {"tap"} });	
-	mediaGroups.push_back({MediaGroupIdProgram, "Program", MediaGroup::Type::Program, {"prg", "p00", "t64"}, {"prg"} });
+	mediaGroups.push_back({MediaGroupIdDisk, "Disk", MediaGroup::Type::Disk, {"d64", "g64", "p64", "d71", "g71", "p71", "d81", "g81", "p81"} });
+	mediaGroups.push_back({MediaGroupIdTape, "Tape", MediaGroup::Type::Tape, {"tap"} });
+	mediaGroups.push_back({MediaGroupIdProgram, "Program", MediaGroup::Type::Program, {"prg", "p00", "t64"} });
     mediaGroups.push_back({MediaGroupIdExpansionGame, "Cartridge", MediaGroup::Type::Expansion, {"bin", "crt"} });
-    mediaGroups.push_back({MediaGroupIdExpansionEasyFlash, "EasyFlash", MediaGroup::Type::Expansion, {"bin", "crt"}, {"crt"} });
-    mediaGroups.push_back({MediaGroupIdExpansionEasyFlash3, "EasyFlash³", MediaGroup::Type::Expansion, {"bin", "crt"}, {"crt"} });
-    mediaGroups.push_back({MediaGroupIdExpansionFreezer, "Freezer", MediaGroup::Type::Expansion, {"bin", "crt"}, {} });
-    mediaGroups.push_back({MediaGroupIdExpansionRetroReplay, "Retro Replay", MediaGroup::Type::Expansion, {"bin", "crt"}, {"crt"} });
-    mediaGroups.push_back({MediaGroupIdExpansionGeoRam, "GeoRam", MediaGroup::Type::Expansion, {"bin"}, {"bin"} });
-    mediaGroups.push_back({MediaGroupIdExpansionReu, "REU", MediaGroup::Type::Expansion, {"bin", "crt", "prg", "reu"}, {""} });
+    mediaGroups.push_back({MediaGroupIdExpansionEasyFlash, "EasyFlash", MediaGroup::Type::Expansion, {"bin", "crt"} });
+    mediaGroups.push_back({MediaGroupIdExpansionEasyFlash3, "EasyFlash³", MediaGroup::Type::Expansion, {"bin", "crt"} });
+    mediaGroups.push_back({MediaGroupIdExpansionFreezer, "Freezer", MediaGroup::Type::Expansion, {"bin", "crt"} });
+    mediaGroups.push_back({MediaGroupIdExpansionRetroReplay, "Retro Replay", MediaGroup::Type::Expansion, {"bin", "crt"} });
+    mediaGroups.push_back({MediaGroupIdExpansionGeoRam, "GeoRam", MediaGroup::Type::Expansion, {"bin", "georam"} });
+    mediaGroups.push_back({MediaGroupIdExpansionReu, "REU", MediaGroup::Type::Expansion, {"bin", "crt", "prg", "reu"} });
     mediaGroups.push_back({MediaGroupIdExpansionRS232, "RS-232", MediaGroup::Type::Expansion });
     mediaGroups.push_back({MediaGroupIdExpansionFastloader, "Fast Loader", MediaGroup::Type::Expansion,{"bin", "crt","rom"} });
-    mediaGroups.push_back({MediaGroupIdExpansionFinalChessCard, "Final Chesscard", MediaGroup::Type::Expansion,{"bin","rom"}, {"bin"} });
+    mediaGroups.push_back({MediaGroupIdExpansionFinalChessCard, "Final Chesscard", MediaGroup::Type::Expansion,{"bin","rom"} });
     mediaGroups.push_back({MediaGroupIdExpansionSuperCpu, "SuperCPU", MediaGroup::Type::Expansion,{"bin","rom"} });
-    mediaGroups.push_back({MediaGroupIdExpansionExpert, "Trilogic Expert", MediaGroup::Type::Expansion,{"crt"}, {} });
-    mediaGroups.push_back({MediaGroupIdExpansionGmod2, "GMod2", MediaGroup::Type::Expansion,{"bin", "crt"}, {"crt", "bin"} });
+    mediaGroups.push_back({MediaGroupIdExpansionExpert, "Trilogic Expert", MediaGroup::Type::Expansion,{"crt"} });
+    mediaGroups.push_back({MediaGroupIdExpansionGmod2, "GMod2", MediaGroup::Type::Expansion,{"bin", "crt"} });
+
+    typedef Media::MemoryType MemType;
 
 	{   auto& group = mediaGroups[MediaGroupIdDisk];
     
-		group.media.push_back({0, "Device 8", 0, &group});
-		group.media.push_back({1, "Device 9", 0, &group});
-		group.media.push_back({2, "Device 10", 0, &group});
-		group.media.push_back({3, "Device 11", 0, &group});
+		group.media.push_back({0, "Device 8", 0, &group, MemType::Magnetic});
+		group.media.push_back({1, "Device 9", 0, &group, MemType::Magnetic});
+		group.media.push_back({2, "Device 10", 0, &group, MemType::Magnetic});
+		group.media.push_back({3, "Device 11", 0, &group, MemType::Magnetic});
         group.selected = nullptr;
 	}
 
 	{   auto& group = mediaGroups[MediaGroupIdTape];
-		group.media.push_back({0, "Datasette", 0, &group});
+		group.media.push_back({0, "Datasette", 0, &group, MemType::Magnetic});
         group.selected = nullptr;
 	}
     
 	{   auto& group = mediaGroups[MediaGroupIdProgram];
-		group.media.push_back({0, "Program 1", 0, &group});
-        group.media.push_back({1, "Program 2", 0, &group});
-        group.media.push_back({2, "Program 3", 0, &group});
-        group.media.push_back({3, "Program 4", 0, &group});
+		group.media.push_back({0, "Program 1", 0, &group, MemType::RAM});
+        group.media.push_back({1, "Program 2", 0, &group, MemType::RAM});
+        group.media.push_back({2, "Program 3", 0, &group, MemType::RAM});
+        group.media.push_back({3, "Program 4", 0, &group, MemType::RAM});
 
         group.selected = &group.media[0];
 	}
     
     {   auto& group = mediaGroups[MediaGroupIdExpansionGame];
-		group.media.push_back({0, "Cartridge 1", 0, &group});
-        group.media.push_back({1, "Cartridge 2", 0, &group});
-        group.media.push_back({2, "Cartridge 3", 0, &group});
-        group.media.push_back({3, "Cartridge 4", 0, &group});
-        group.media.push_back({4, "Cartridge 5", 0, &group});
-        group.media.push_back({5, "Cartridge 6", 0, &group});
+		group.media.push_back({0, "Cartridge 1", 0, &group, MemType::ROM});
+        group.media.push_back({1, "Cartridge 2", 0, &group, MemType::ROM});
+        group.media.push_back({2, "Cartridge 3", 0, &group, MemType::ROM});
+        group.media.push_back({3, "Cartridge 4", 0, &group, MemType::ROM});
+        group.media.push_back({4, "Cartridge 5", 0, &group, MemType::ROM});
+        group.media.push_back({5, "Cartridge 6", 0, &group, MemType::ROM});
         group.selected = &group.media[0];  
 	}
     
     {   auto& group = mediaGroups[MediaGroupIdExpansionReu];
-        group.media.push_back({0, "REU Memory 1", 0, &group});
-        group.media.push_back({1, "REU Memory 2", 0, &group});
-        group.media.push_back({2, "REU Memory 3", 0, &group});
-        group.media.push_back({3, "REU Memory 4", 0, &group});
-        group.media.push_back({4, "REU Rom", 0, &group});
+        group.media.push_back({0, "REU Memory 1", 0, &group, MemType::RAM});
+        group.media.push_back({1, "REU Memory 2", 0, &group, MemType::RAM});
+        group.media.push_back({2, "REU Memory 3", 0, &group, MemType::RAM});
+        group.media.push_back({3, "REU Memory 4", 0, &group, MemType::RAM});
+        group.media.push_back({4, "REU Rom 1", 0, &group, MemType::ROM});
+	    group.media.push_back({5, "REU Rom 2", 0, &group, MemType::ROM});
 
         group.selected = &group.media[0];  
 	}
     
     {   auto& group = mediaGroups[MediaGroupIdExpansionFreezer];
-		group.media.push_back({0, "Freezer 1", 0, &group});
-        group.media.push_back({1, "Freezer 2", 0, &group});
-        group.media.push_back({2, "Freezer 3", 0, &group});
-        group.media.push_back({3, "Freezer 4", 0, &group});
-        group.media.push_back({4, "Freezer 5", 0, &group});
-        group.media.push_back({5, "Freezer 6", 0, &group});
+		group.media.push_back({0, "Freezer 1", 0, &group, MemType::ROM});
+        group.media.push_back({1, "Freezer 2", 0, &group, MemType::ROM});
+        group.media.push_back({2, "Freezer 3", 0, &group, MemType::ROM});
+        group.media.push_back({3, "Freezer 4", 0, &group, MemType::ROM});
+        group.media.push_back({4, "Freezer 5", 0, &group, MemType::ROM});
+        group.media.push_back({5, "Freezer 6", 0, &group, MemType::ROM});
         group.selected = &group.media[0];  
 	}
 
     {   auto& group = mediaGroups[MediaGroupIdExpansionEasyFlash];
-		group.media.push_back({0, "EasyFlash 1", 0, &group});
-        group.media.push_back({1, "EasyFlash 2", 0, &group});
-        group.media.push_back({2, "EasyFlash 3", 0, &group});
-        group.media.push_back({3, "EasyFlash 4", 0, &group});
-        group.media.push_back({4, "EasyFlash 5", 0, &group});
-        group.media.push_back({5, "EasyFlash 6", 0, &group});
+		group.media.push_back({0, "EasyFlash 1", 0, &group, MemType::FLASH});
+        group.media.push_back({1, "EasyFlash 2", 0, &group, MemType::FLASH});
+        group.media.push_back({2, "EasyFlash 3", 0, &group, MemType::FLASH});
+        group.media.push_back({3, "EasyFlash 4", 0, &group, MemType::FLASH});
+        group.media.push_back({4, "EasyFlash 5", 0, &group, MemType::FLASH});
+        group.media.push_back({5, "EasyFlash 6", 0, &group, MemType::FLASH});
         group.selected = &group.media[0];
 	}
 
     {   auto& group = mediaGroups[MediaGroupIdExpansionEasyFlash3];
-        group.media.push_back({0, "EF3 Slot 0", 0, &group});
-        group.media.push_back({1, "EF3 Slot 1", 0, &group});
-        group.media.push_back({2, "EF3 Slot 2", 0, &group});
-        group.media.push_back({3, "EF3 Slot 3", 0, &group});
-        group.media.push_back({4, "EF3 Slot 4", 0, &group});
-        group.media.push_back({5, "EF3 Slot 5", 0, &group});
-        group.media.push_back({6, "EF3 Slot 6", 0, &group});
-        group.media.push_back({7, "EF3 Slot 7", 0, &group});
+        group.media.push_back({0, "EF3 Slot 0", 0, &group, MemType::FLASH});
+        group.media.push_back({1, "EF3 Slot 1", 0, &group, MemType::FLASH});
+        group.media.push_back({2, "EF3 Slot 2", 0, &group, MemType::FLASH});
+        group.media.push_back({3, "EF3 Slot 3", 0, &group, MemType::FLASH});
+        group.media.push_back({4, "EF3 Slot 4", 0, &group, MemType::FLASH});
+        group.media.push_back({5, "EF3 Slot 5", 0, &group, MemType::FLASH});
+        group.media.push_back({6, "EF3 Slot 6", 0, &group, MemType::FLASH});
+        group.media.push_back({7, "EF3 Slot 7", 0, &group, MemType::FLASH});
         group.selected = nullptr;
     }
     
     {   auto& group = mediaGroups[MediaGroupIdExpansionRetroReplay];
-		group.media.push_back({0, "Retro Replay 1", 0, &group});
-        group.media.push_back({1, "Retro Replay 2", 0, &group});
-        group.media.push_back({2, "Retro Replay 3", 0, &group});
-        group.media.push_back({3, "Retro Replay 4", 0, &group});
-        group.media.push_back({4, "Retro Replay 5", 0, &group});
-        group.media.push_back({5, "Retro Replay 6", 0, &group});
+		group.media.push_back({0, "Retro Replay 1", 0, &group, MemType::FLASH});
+        group.media.push_back({1, "Retro Replay 2", 0, &group, MemType::FLASH});
+        group.media.push_back({2, "Retro Replay 3", 0, &group, MemType::FLASH});
+        group.media.push_back({3, "Retro Replay 4", 0, &group, MemType::FLASH});
+        group.media.push_back({4, "Retro Replay 5", 0, &group, MemType::FLASH});
+        group.media.push_back({5, "Retro Replay 6", 0, &group, MemType::FLASH});
         group.selected = &group.media[0];  
 	}
 
 	{	auto& group = mediaGroups[MediaGroupIdExpansionGeoRam];
-		group.media.push_back({0, "GeoRam Memory 1", 0, &group});
-		group.media.push_back({1, "GeoRam Memory 2", 0, &group});
-		group.media.push_back({2, "GeoRam Memory 3", 0, &group});
-		group.media.push_back({3, "GeoRam Memory 4", 0, &group});
+		group.media.push_back({0, "GeoRam Memory 1", 0, &group, MemType::SRAM});
+		group.media.push_back({1, "GeoRam Memory 2", 0, &group, MemType::SRAM});
+		group.media.push_back({2, "GeoRam Memory 3", 0, &group, MemType::SRAM});
+		group.media.push_back({3, "GeoRam Memory 4", 0, &group, MemType::SRAM});
 		group.selected = &group.media[0];
 	}
 
     {	auto& group = mediaGroups[MediaGroupIdExpansionRS232];
-        group.media.push_back({0, "RS-232 1", 0, &group});
-        group.media.push_back({1, "RS-232 2", 0, &group});
-        group.media.push_back({2, "RS-232 3", 0, &group});
-        group.media.push_back({3, "RS-232 4", 0, &group});
+        group.media.push_back({0, "RS-232 1", 0, &group, MemType::IP});
+        group.media.push_back({1, "RS-232 2", 0, &group, MemType::IP});
+        group.media.push_back({2, "RS-232 3", 0, &group, MemType::IP});
+        group.media.push_back({3, "RS-232 4", 0, &group, MemType::IP});
         group.selected = &group.media[0];
     }
 
     {	auto& group = mediaGroups[MediaGroupIdExpansionFastloader];
-        group.media.push_back({0, "Fast Loader 1", 0, &group});
-        group.media.push_back({1, "Fast Loader 2", 0, &group});
-        group.media.push_back({2, "Fast Loader 3", 0, &group});
-	    group.media.push_back({3, "Fast Loader 4", 0, &group});
+        group.media.push_back({0, "Fast Loader 1", 0, &group, MemType::ROM});
+        group.media.push_back({1, "Fast Loader 2", 0, &group, MemType::ROM});
+        group.media.push_back({2, "Fast Loader 3", 0, &group, MemType::ROM});
+	    group.media.push_back({3, "Fast Loader 4", 0, &group, MemType::ROM});
         group.selected = &group.media[0];
     }
 
     {   auto& group = mediaGroups[MediaGroupIdExpansionFinalChessCard];
-	    group.media.push_back({0, "Final Chesscard CROM 1", 0, &group});
-	    group.media.push_back({1, "Final Chesscard CROM 2", 0, &group});
-	    group.media.push_back({2, "Final Chesscard BROM 1", 0, &group});
-	    group.media.push_back({3, "Final Chesscard BROM 2", 0, &group});
-	    group.media.push_back({4, "Final Chesscard RAM 1", 0, &group});
-	    group.media.push_back({5, "Final Chesscard RAM 2", 0, &group});
+	    group.media.push_back({0, "Final Chesscard CROM 1", 0, &group, MemType::ROM});
+	    group.media.push_back({1, "Final Chesscard CROM 2", 0, &group, MemType::ROM});
+	    group.media.push_back({2, "Final Chesscard BROM 1", 0, &group, MemType::ROM});
+	    group.media.push_back({3, "Final Chesscard BROM 2", 0, &group, MemType::ROM});
+	    group.media.push_back({4, "Final Chesscard RAM 1", 0, &group, MemType::SRAM});
+	    group.media.push_back({5, "Final Chesscard RAM 2", 0, &group, MemType::SRAM});
 	    group.selected = &group.media[0];
     }
 
     {   auto& group = mediaGroups[MediaGroupIdExpansionSuperCpu];
-	    group.media.push_back({0, "SuperCPU 1", 0, &group});
-	    group.media.push_back({1, "SuperCPU 2", 0, &group});
+	    group.media.push_back({0, "SuperCPU 1", 0, &group, MemType::ROM});
+	    group.media.push_back({1, "SuperCPU 2", 0, &group, MemType::ROM});
 	    group.selected = &group.media[0];
     }
 
     {   auto& group = mediaGroups[MediaGroupIdExpansionExpert];
-        group.media.push_back({0, "Trilogic Expert", 0, &group});
+        group.media.push_back({0, "Trilogic Expert", 0, &group, MemType::RAM});
         group.selected = &group.media[0];
     }
 
     {   auto& group = mediaGroups[MediaGroupIdExpansionGmod2];
-	    group.media.push_back({0, "GMod2 Flash 1", 0, &group});
-	    group.media.push_back({1, "GMod2 Flash 2", 0, &group});
-	    group.media.push_back({2, "GMod2 Flash 3", 0, &group});
+	    group.media.push_back({0, "GMod2 Flash 1", 0, &group, MemType::FLASH});
+	    group.media.push_back({1, "GMod2 Flash 2", 0, &group, MemType::FLASH});
+	    group.media.push_back({2, "GMod2 Flash 3", 0, &group, MemType::FLASH});
 
-	    group.media.push_back({3, "GMod2 Eeprom 1", 0, &group});
-	    group.media.push_back({4, "GMod2 Eeprom 2", 0, &group});
-	    group.media.push_back({5, "GMod2 Eeprom 3", 0, &group});
+	    group.media.push_back({3, "GMod2 Eeprom 1", 0, &group, MemType::EEPROM});
+	    group.media.push_back({4, "GMod2 Eeprom 2", 0, &group, MemType::EEPROM});
+	    group.media.push_back({5, "GMod2 Eeprom 3", 0, &group, MemType::EEPROM});
 	    group.selected = &group.media[0];
     }
 
@@ -210,20 +213,21 @@ auto Interface::prepareMedia() -> void {
         
         for(auto& media : group.media) {
             media.pcbLayout = nullptr;
-            media.secondary = false;
+            media.parent = nullptr;
         }
     }
        
-    mediaGroups[MediaGroupIdExpansionReu].media[4].secondary = true;
+    mediaGroups[MediaGroupIdExpansionReu].media[4].parent = &mediaGroups[MediaGroupIdExpansionReu].media[0];
+    mediaGroups[MediaGroupIdExpansionReu].media[5].parent = &mediaGroups[MediaGroupIdExpansionReu].media[1];
 
-    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[2].secondary = true;
-    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[3].secondary = true;
-    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[4].secondary = true;
-    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[5].secondary = true;
+    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[2].parent = &mediaGroups[MediaGroupIdExpansionFinalChessCard].media[0];
+    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[3].parent = &mediaGroups[MediaGroupIdExpansionFinalChessCard].media[1];
+    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[4].parent = &mediaGroups[MediaGroupIdExpansionFinalChessCard].media[0];
+    mediaGroups[MediaGroupIdExpansionFinalChessCard].media[5].parent = &mediaGroups[MediaGroupIdExpansionFinalChessCard].media[1];
 
-    mediaGroups[MediaGroupIdExpansionGmod2].media[3].secondary = true;
-    mediaGroups[MediaGroupIdExpansionGmod2].media[4].secondary = true;
-    mediaGroups[MediaGroupIdExpansionGmod2].media[5].secondary = true;
+    mediaGroups[MediaGroupIdExpansionGmod2].media[3].parent = &mediaGroups[MediaGroupIdExpansionGmod2].media[0];
+    mediaGroups[MediaGroupIdExpansionGmod2].media[4].parent = &mediaGroups[MediaGroupIdExpansionGmod2].media[1];
+    mediaGroups[MediaGroupIdExpansionGmod2].media[5].parent = &mediaGroups[MediaGroupIdExpansionGmod2].media[2];
 }
 
 auto Interface::prepareExpansions() -> void {
@@ -278,9 +282,6 @@ auto Interface::prepareExpansions() -> void {
 
     {   auto& expansion = *getExpansionById( ExpansionIdGmod2 );
 
-        expansion.creationIdents.push_back( "Gmod2 Flash" );
-        expansion.creationIdents.push_back( "Gmod2 Eeprom" );
-
         mediaGroups[MediaGroupIdExpansionGmod2].expansion = &expansion;
     }
                 
@@ -309,7 +310,6 @@ auto Interface::prepareExpansions() -> void {
     {   auto& expansion = *getExpansionById( ExpansionIdEasyFlash );
 
         expansion.jumpers.push_back( {0, "Flash", false} );
-		expansion.creationIdents.push_back( "EasyFlash" );
     
         mediaGroups[MediaGroupIdExpansionEasyFlash].expansion = &expansion;
     }
@@ -326,8 +326,6 @@ auto Interface::prepareExpansions() -> void {
         expansion.pcbs.push_back( {CartridgeIdDefault, "Default"} );
         expansion.pcbs.push_back( {CartridgeIdRetroReplay, "Retro Replay"} );
         expansion.pcbs.push_back( {CartridgeIdNordicReplay, "Nordic Replay"} );
-		expansion.creationIdents.push_back( "Retro Replay" );
-        expansion.creationIdents.push_back( "Nordic Replay" );
         
         expansion.jumpers.push_back( {0, "bank", false} );
         expansion.jumpers.push_back( {1, "flash", false} );
@@ -336,8 +334,6 @@ auto Interface::prepareExpansions() -> void {
     }
 
 	{   auto& expansion = *getExpansionById( ExpansionIdGeoRam );
-    
-		expansion.creationIdents.push_back( "GeoRam" );
 		
         mediaGroups[MediaGroupIdExpansionGeoRam].expansion = &expansion;
     }
@@ -370,7 +366,6 @@ auto Interface::prepareExpansions() -> void {
         expansion.jumpers.push_back({2, "+30 MHz"} );
         expansion.jumpers.push_back({3, "+50 MHz"} );
 
-        expansion.creationIdents.push_back( "Final Chesscard" );
         mediaGroups[MediaGroupIdExpansionFinalChessCard].expansion = &expansion;
     }
 
@@ -401,7 +396,7 @@ auto Interface::prepareExpansions() -> void {
             if (ef3)
                 media.pcbLayout = (media.id == 0) ? &group.expansion->pcbs[0] : nullptr;
             else
-                media.pcbLayout = (!media.secondary && group.expansion && group.expansion->pcbs.size())
+                media.pcbLayout = (!media.parent && group.expansion && group.expansion->pcbs.size())
                         ? &group.expansion->pcbs[0] : nullptr;
         }
     }
@@ -664,7 +659,8 @@ auto Interface::prepareModels() -> void {
 
     models.push_back({ModelIdDriveFastLoader, "Fast Loader", Model::Type::Combo, Model::Purpose::DriveSettings, 0, {0, 16},
         { "Manual", "SpeedDOS 1541", "DolphinDOS v2 1541", "DolphinDOS v2 Ultimate", "DolphinDOS v3 1541", "DolphinDOS v3 157x",
-          "ProfDOS v1 1541", "ProfDOS R3/R4 1541", "ProfDOS R5 1570", "ProfDOS R6 1571", "PrologicDOS Classic 1541", "PrologicDOS 1541", "Turbo Trans", "ProSpeed 1571 v2.0", "StarDOS", "SuperCard+", "Disk Demon 1541"}});
+          "ProfDOS v1 1541", "ProfDOS R3/R4 1541", "ProfDOS R5 1570", "ProfDOS R6 1571", "PrologicDOS Classic 1541", "PrologicDOS 1541",
+            "Turbo Trans", "ProSpeed 1571 v2.0", "StarDOS", "SuperCard+", "Disk Demon 1541"}});
 
     models.push_back({ModelIdTrackZeroSensor, "1541C Track-0 Sensor", Model::Type::Switch, Model::Purpose::DriveSettings, 0 });
     models.push_back({ModelIdTapeDrivesConnected, "Tape Drives", Model::Type::Combo, Model::Purpose::DriveSettings, 0, {0, 1},
@@ -1310,7 +1306,7 @@ auto Interface::insertExpansionImage(Media* media, uint8_t* data, unsigned size)
     if (group->expansion->id == ExpansionIdGame)
         system->gameCart->setRom(media, data, size);
     else if (group->expansion->id == ExpansionIdReu)
-        !media->secondary ? system->reu->setRam(data, size) : system->reu->setRom(media, data, size);
+        system->reu->setRom(media, data, size);
     else if (group->expansion->id == ExpansionIdFreezer)
         system->freezer->setRom(media, data, size);
     else if (group->expansion->id == ExpansionIdEasyFlash)
@@ -1407,7 +1403,7 @@ auto Interface::ejectExpansionImage(Media* media) -> void {
     if (group->expansion->id == ExpansionIdGame)
         system->gameCart->setRom(media, nullptr, 0);
     else if (group->expansion->id == ExpansionIdReu) {
-        !media->secondary ? system->reu->unsetRam() : system->reu->setRom(media, nullptr, 0);
+        system->reu->setRom(media, nullptr, 0);
     } else if (group->expansion->id == ExpansionIdFreezer)
         system->freezer->setRom(media, nullptr, 0);
     else if (group->expansion->id == ExpansionIdEasyFlash)
@@ -1432,7 +1428,9 @@ auto Interface::ejectExpansionImage(Media* media) -> void {
         system->gmod2->setRom(media, nullptr, 0);
 }
 
-auto Interface::createExpansionImage(MediaGroup* group, unsigned& imageSize, uint8_t id) -> uint8_t* {
+auto Interface::createExpansionImage(Media* media, unsigned& imageSize) -> uint8_t* {
+    auto group = media->group;
+
     if (!group->isExpansion())
         return nullptr;
     
@@ -1440,13 +1438,13 @@ auto Interface::createExpansionImage(MediaGroup* group, unsigned& imageSize, uin
         return system->easyFlash->createImage(imageSize);
     
     if (group->expansion->id == ExpansionIdRetroReplay)
-        return system->retroReplay->createImage(imageSize, id);
+        return system->retroReplay->createImage(media, imageSize);
 	
 	if (group->expansion->id == ExpansionIdGmod2)
-		return system->gmod2->createImage(imageSize, id);
+		return system->gmod2->createImage(media, imageSize);
 	
 	if (group->expansion->id == ExpansionIdGeoRam)
-		return system->geoRam->createImage( imageSize, id );
+		return system->geoRam->createImage( imageSize );
 
     if (group->expansion->id == ExpansionIdFinalChessCard)
         return system->finalChessCard->createImage(imageSize);
@@ -1456,11 +1454,6 @@ auto Interface::createExpansionImage(MediaGroup* group, unsigned& imageSize, uin
 
 auto Interface::isExpansionBootable() -> bool {
     return system->expansionPort->isBootable();
-}
-
-auto Interface::hasExpansionSecondaryRom() -> bool {
-	
-	return system->expansionPort->hasSecondaryRom();
 }
 
 auto Interface::insertProgram(Media* media, uint8_t* data, unsigned size) -> void {

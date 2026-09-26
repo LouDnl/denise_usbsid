@@ -40,7 +40,7 @@ auto InputManager::setHotkeys() -> void {
     hotkeys.push_back( {Hotkey::Id::ThreadedRenderer, "Threaded Renderer"} );
     hotkeys.push_back( {Hotkey::Id::Quit, "exit"} );
 
-    hotkeys.push_back( {Hotkey::Id::ToggleSCVideo, "toggle S/C-Video"} );
+    //hotkeys.push_back( {Hotkey::Id::ToggleSCVideo, "toggle S/C-Video"} );
     hotkeys.push_back( {Hotkey::Id::ToggleShader, "toggle Shader"} );
     hotkeys.push_back( {Hotkey::Id::ToggleBorder, "toggle border"} );
     hotkeys.push_back( {Hotkey::Id::ToggleBorderPrev, "toggle border prev"} );
@@ -167,7 +167,8 @@ auto InputManager::fireHotkey(InputMapping* trigger) -> void {
             if (!activeEmulator)
                 break;
 
-            program->toggleRecord();
+            if (view)
+                view->toggleRecord();
         } break;
         case Hotkey::Id::RunAheadDown:
         case Hotkey::Id::RunAheadUp: {
@@ -342,16 +343,16 @@ auto InputManager::fireHotkey(InputMapping* trigger) -> void {
 
         case Hotkey::PowerWithUnplugCart:
             emuThread->lock(true);
+            MiscHelper::removeExpansion(emulator);
             program->power(emulator);
-            MiscHelper::removeExpansion(false);
             break;
 
         case Hotkey::PowerWithEjectDisks:
             emuThread->lock(true);
             for (auto& media : emulator->getDiskMediaGroup()->media)
                 fileloader->eject(emulator, &media);
+            MiscHelper::removeExpansion(emulator);
             program->power(emulator);
-            MiscHelper::removeExpansion(false);
             break;
 			
 		case Hotkey::SoftReset:
@@ -399,7 +400,7 @@ auto InputManager::fireHotkey(InputMapping* trigger) -> void {
                 // dinput needs this, when grab button is mapped to mouse
                 view->prepareCursorHide(200);
                 //inputDriver->mAcquire();
-            } else if (!program->isPause && program->isAnalogDeviceConnected()) {
+            } else if (!program->isPause && view->isAnalogDeviceConnected()) {
                 view->prepareCursorHide(200);
                 // inputDriver->mAcquire();
                 view->setFocused();
@@ -453,9 +454,9 @@ auto InputManager::fireHotkey(InputMapping* trigger) -> void {
             if (emuView && emuView->presentationLayout) {
                 switch (tr) {
                     default:
-                    case 0: emuView->presentationLayout->layBase.view.option.trOff.setChecked(); break;
-                    case 1: emuView->presentationLayout->layBase.view.option.trOn.setChecked(); break;
-                    case 2: emuView->presentationLayout->layBase.view.option.trAuto.setChecked(); break;
+                    case 0: emuView->presentationLayout->layBase.view.mode.trOff.setChecked(); break;
+                    case 1: emuView->presentationLayout->layBase.view.mode.trOn.setChecked(); break;
+                    case 2: emuView->presentationLayout->layBase.view.mode.trAuto.setChecked(); break;
                 }
             }
 
@@ -472,35 +473,14 @@ auto InputManager::fireHotkey(InputMapping* trigger) -> void {
             VideoManager::setSynchronize();
         } break;
         case Hotkey::Id::ToggleShader:
-            if(!videoDriver->shaderSupport())
-                break;
         case Hotkey::Id::ToggleSCVideo: {
             if (!activeEmulator)
                 break;
+
             emuThread->lock();
-            unsigned _mode = (id == Hotkey::Id::ToggleSCVideo) ? (unsigned)VideoManager::CrtMode::Cpu : (unsigned)VideoManager::CrtMode::Gpu;
-            unsigned _current = settings->get<unsigned>("video_crt", (unsigned)VideoManager::CrtMode::None);
-
-            if (id == Hotkey::Id::ToggleSCVideo && _current == (unsigned)VideoManager::CrtMode::Cpu) {
-                _mode = (unsigned)VideoManager::CrtMode::None;
-            } else if (id == Hotkey::Id::ToggleShader && _current == (unsigned)VideoManager::CrtMode::Gpu) {
-                _mode = (unsigned)VideoManager::CrtMode::None;
-            }
-
-            settings->set<unsigned>("video_crt", _mode);
-            program->setWarp( Program::Warp::Off );
-            auto emuView = EmuConfigView::TabWindow::getView( activeEmulator );
-            if (emuView && emuView->presentationLayout)
-                emuView->presentationLayout->loadSettings();
-            else
-                VideoManager::getInstance( activeEmulator )->reloadSettings(false);
-
-            if (statusHandler) {
-                std::string txt = "RGB";
-                if (_mode == (unsigned)VideoManager::CrtMode::Cpu) txt = "S/C-Video CPU";
-                else if (_mode == (unsigned)VideoManager::CrtMode::Gpu) txt = "Shader GPU";
-                statusHandler->setMessage( trans->getA(txt), false, true );
-            }
+            bool state = VideoManager::getInstance( activeEmulator )->toggleShaderTemporary();
+            if (statusHandler)
+                statusHandler->setMessage( trans->getA(state ? "off" : "Shader"), false, true );
 
         } break;
         case Hotkey::Id::Pause:
@@ -716,7 +696,7 @@ auto InputManager::fireHotkey(InputMapping* trigger) -> void {
             unsigned val = 1;
 
             if (emuView && emuView->systemLayout) {
-                val = emuView->systemLayout->modelLayout.nextOption( C64Interface::ModelIdSid );
+                val = emuView->systemLayout->systemModelLayout.nextOption( C64Interface::ModelIdSid );
                 emuThread->lock();
             } else {
                 emuThread->lock();

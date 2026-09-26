@@ -38,21 +38,29 @@ auto BinaryMonitor::setServer(const std::string& uri) -> void {
     }
 
     _log("Socket: server online at %s", uri.c_str())
-    waitForClientToAccept();
 }
 
-auto BinaryMonitor::waitForClientToAccept() -> void {
+auto BinaryMonitor::checkForClientToAccept(unsigned waitMs) -> bool {
+    static constexpr unsigned wait = 50;
     bool error = false;
-    if (server == nullptr)
-        return;
 
-    for (unsigned i = 0; i < 20; i++) {
+    if (server == nullptr)
+        return false;
+
+    unsigned tries = waitMs / wait;
+
+    for (unsigned i = 0; i <= tries; i++) {
         if ( !server->poll(error) ) {
             if (error) {
                 destroy(server);
                 break;
             }
-            GUIKIT::System::sleep( 50 );
+            if (!waitMs)
+                break;
+
+            if (i < tries)
+                GUIKIT::System::sleep( wait );
+
             continue;
         }
 
@@ -64,14 +72,22 @@ auto BinaryMonitor::waitForClientToAccept() -> void {
 
         delayedJobs = false;
 
-        Emulator::Interface* emulator = activeEmulator;
-        if (!emulator)
-            emulator = program->getEmulator("C64");
-
-        initDebugger(emulator, DebuggerTheme::CPU);
-        emulator->debuggerAdd( DebuggerTheme::Unspecified, DebuggerAction::UIRequestedStop, 0 );
-        break;
+        return true;
     }
+
+    return false;
+}
+
+auto BinaryMonitor::initBreak() -> void {
+    if (client == nullptr)
+        return;
+
+    Emulator::Interface* emulator = activeEmulator;
+    if (!emulator)
+        emulator = program->getEmulator("C64");
+
+    initDebugger(emulator, DebuggerTheme::CPU);
+    emulator->debuggerAdd( DebuggerTheme::Unspecified, DebuggerAction::UIRequestedStop, 0 );
 }
 
 auto BinaryMonitor::initDebugger(Emulator::Interface* emulator, DebuggerTheme theme) -> Debugger* {

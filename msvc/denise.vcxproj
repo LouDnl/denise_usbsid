@@ -192,6 +192,7 @@
     <ClInclude Include="..\emulation\libc64\expansionPort\reu\reu.h" />
     <ClInclude Include="..\emulation\libc64\expansionPort\superCpu\superCpu.h" />
     <ClInclude Include="..\emulation\libc64\expansionPort\trilogicExpert\expert.h" />
+    <ClInclude Include="..\emulation\libc64\expansionPort\uci\uci.h" />
     <ClInclude Include="..\emulation\libc64\input\controlPort\analogControl.h" />
     <ClInclude Include="..\emulation\libc64\input\controlPort\controlPort.h" />
     <ClInclude Include="..\emulation\libc64\input\controlPort\lightControl.h" />
@@ -372,6 +373,7 @@
     <ClInclude Include="..\program\tools\socket.h" />
     <ClInclude Include="..\program\video\manager.h" />
     <ClInclude Include="..\program\video\palette.h" />
+    <ClInclude Include="..\program\video\scVideo.h" />
     <ClInclude Include="..\program\video\shaderParser.h" />
     <ClInclude Include="..\program\view\message.h" />
     <ClInclude Include="..\program\view\status.h" />
@@ -1103,6 +1105,7 @@
     <ClCompile Include="..\emulation\libc64\expansionPort\reu\reu.cpp" />
     <ClCompile Include="..\emulation\libc64\expansionPort\superCpu\superCpu.cpp" />
     <ClCompile Include="..\emulation\libc64\expansionPort\trilogicExpert\expert.cpp" />
+    <ClCompile Include="..\emulation\libc64\expansionPort\uci\uci.cpp" />
     <ClCompile Include="..\emulation\libc64\input\controlPort\cga.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|win32'">true</ExcludedFromBuild>
@@ -1720,12 +1723,6 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|win32'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="..\program\audio.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|win32'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="..\program\audio\dsp\bass.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
     </ClCompile>
@@ -1878,12 +1875,6 @@
     <ClCompile Include="..\program\helper\fileHelper.cpp" />
     <ClCompile Include="..\program\helper\miscHelper.cpp" />
     <ClCompile Include="..\program\helper\settingsHelper.cpp" />
-    <ClCompile Include="..\program\input.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|win32'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="..\program\input\capture.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
@@ -1973,12 +1964,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|win32'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="..\program\video\palette.cpp" />
-    <ClCompile Include="..\program\video\props.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|win32'">true</ExcludedFromBuild>
-    </ClCompile>
+    <ClCompile Include="..\program\video\scVideo.cpp" />
     <ClCompile Include="..\program\video\shaderParser.cpp" />
     <ClCompile Include="..\program\video\sync.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>

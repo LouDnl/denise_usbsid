@@ -19,16 +19,17 @@
 
 Autoloader* autoloader = nullptr;
 
-auto Autoloader::init( std::vector<std::string> files, Mode mode, unsigned selection, std::string fileName ) -> void {
+auto Autoloader::init( std::vector<std::string> files, Mode mode, unsigned selection ) -> void {
     ddControl.emulator = nullptr;
     ddControl.mediaGroups.clear();
     ddControl.errorLevel = 0;
     ddControl.mode = mode;
     ddControl.selection = selection;
-    ddControl.fileName = fileName;
+    ddControl.fileToLoad = "";
     ddControl.files.clear();
     ddControl.saveFile = nullptr;
     ddControl.overrideSpeeder = false;
+    ddControl.archiveId = -1;
     
     unsigned i = 0;
     for( auto& file : files ) {        
@@ -45,6 +46,14 @@ auto Autoloader::setEmulator(Emulator::Interface* emulator) -> void {
 
 auto Autoloader::overrideSpeeder() -> void {
     ddControl.overrideSpeeder = true;
+}
+
+auto Autoloader::setFileToLoad(const std::string& file) -> void {
+    ddControl.fileToLoad = file;
+}
+
+auto Autoloader::setArchiveId(int id) -> void {
+    ddControl.archiveId = id;
 }
 
 auto Autoloader::postProcessing() -> void {
@@ -216,31 +225,24 @@ auto Autoloader::postProcessing() -> void {
 				
 				settings->set<unsigned>("expansion", useExpansion->id);
 
-                if (useExpansion->isRam()) {
-                    fileloader->eject( ddControl.emulator, useExpansion->mediaGroup, true );
-
-                    if (useExpansion->mediaGroupExpanded) {
-                        fileloader->eject( ddControl.emulator, useExpansion->mediaGroupExpanded, true );
-                    }
-                }
-
                 if (emuView && emuView->systemLayout)
                     emuView->systemLayout->setExpansion( useExpansion );
 			}
 		}
 
         videoDriver->hideSplashScreen();
+
+        if (!useExpansion)
+            MiscHelper::removeExpansion(ddControl.emulator, true);
+
         if ( dynamic_cast<LIBC64::Interface*>(ddControl.emulator) || (ddControl.emulator != activeEmulator)
             || (activeEmulator->getModelValue( LIBAMI::Interface::ModelIdSystem ) > 0 ) )
             program->power( ddControl.emulator, emuView != nullptr );
         else
             program->reset(ddControl.emulator); // because of A1000 WOM
 
-        if (!useExpansion)
-            MiscHelper::removeExpansion();
-        else if (statusHandler && activeEmulator->isExpansionUnsupported())
+        if (statusHandler && useExpansion && activeEmulator->isExpansionUnsupported())
             statusHandler->setMessage(trans->getA("unsupported cartridge"), true);
-
 
         bool trapsWithSpeeder = trapped && mediaGroup->isDisk() && settings->get<bool>("autostart_speeder_traps", false);
 
@@ -270,11 +272,11 @@ auto Autoloader::postProcessing() -> void {
             fSetting = FileSetting::getInstance( ddControl.emulator, _underscore(mediaGroup->media[sel].name) );
             set(ddControl.emulator, &mediaGroup->media[0], trapped);
         } else if (mediaGroup->selected) {
-            ddControl.emulator->selectListing(mediaGroup->selected, ddControl.selection, ddControl.fileName, trapped);
+            ddControl.emulator->selectListing(mediaGroup->selected, ddControl.selection, ddControl.fileToLoad, trapped);
             fSetting = FileSetting::getInstance( ddControl.emulator, _underscore(mediaGroup->selected->name) );
             set(ddControl.emulator, mediaGroup->selected, trapped);
         } else {
-            ddControl.emulator->selectListing(&mediaGroup->media[0], ddControl.selection, ddControl.fileName, options);
+            ddControl.emulator->selectListing(&mediaGroup->media[0], ddControl.selection, ddControl.fileToLoad, options);
             fSetting = FileSetting::getInstance( ddControl.emulator, _underscore(mediaGroup->media[0].name) );
             set(ddControl.emulator, &mediaGroup->media[0], trapped, ddControl.selection);
         }
@@ -315,7 +317,7 @@ auto Autoloader::postProcessing() -> void {
 auto Autoloader::shouldCaptureMouse(Emulator::Interface* emulator, GUIKIT::Settings* settings) -> bool {
     return dynamic_cast<LIBAMI::Interface*>(emulator)
         && view->canGrabInputFocusAfterDnDFromOtherApp()
-        && program->isAnalogDeviceConnected()
+        && view->isAnalogDeviceConnected()
         && settings->get<bool>("dragndrop_capture_mouse",false);
 }
 
@@ -335,14 +337,14 @@ auto Autoloader::loadFiles() -> void {
 
     if (!file->exists()) {
         if (ddControl.errorLevel == 0)
-            FileHelper::errorFileSize(MAX_MEDIUM_SIZE, file->getPath(), view->message);
+            FileHelper::errorOpen(file, nullptr, view->message);
 
         return loadFiles();
     }
 
     auto& items = file->scanArchive();
 
-	if (archiveViewer) {
+	if (archiveViewer && (ddControl.archiveId == -1) ) {
         filePool->assign("autoloader", file);
         archiveViewer->onCallback = [this](GUIKIT::File* file, GUIKIT::File::Item* item) {
             bool locked = emuThread->lock(true);
@@ -354,7 +356,10 @@ auto Autoloader::loadFiles() -> void {
 
         archiveViewer->allowNativeArchive(dynamic_cast<LIBAMI::Interface*>(activeEmulator) ? activeEmulator->getDiskMediaGroup() : nullptr);
 		archiveViewer->setView( file, items );
-	} else 
+	} else if (ddControl.archiveId >= 0) {
+	    if (ddControl.archiveId < items.size())
+	        loadFile( file, &items[ddControl.archiveId] );
+	} else
 		loadFile( file, &items[0] );
 }
 
@@ -363,7 +368,7 @@ auto Autoloader::needSlotsForDragnDrop(std::vector<std::string> files) -> unsign
 
     for (auto& path : files) {
         GUIKIT::File* file = filePool->get(path);
-        if (!file || !file->exists() || !file->isSizeValid(MAX_MEDIUM_SIZE))
+        if (!file || !file->exists() || !file->getSize())
             continue;
 
         auto& items = file->scanArchive();
@@ -407,7 +412,7 @@ auto Autoloader::needSlotsForDragnDrop(std::vector<std::string> files) -> unsign
                 }
 
                 for(auto& media : prefered->media) {
-                    if (!media.secondary)
+                    if (!media.parent)
                         count++;
                 }
                 return count;
@@ -466,7 +471,7 @@ auto Autoloader::loadFile( GUIKIT::File* file, GUIKIT::File::Item* item ) -> voi
 					if (!media)
 						media = &mediaGroup.media[ _pos ];
 
-                    if (media->secondary)
+                    if (media->parent)
                         return loadFiles();
 
                     ddControl.emulator = emulator;
@@ -531,7 +536,7 @@ auto Autoloader::activateDrive( Emulator::Interface* emulator, Emulator::Interfa
 
     if (emuView) {
         if(emuView->systemLayout) emuView->systemLayout->driveModelLayout.updateWidget( modelId );
-        if(emuView->mediaLayout) emuView->mediaLayout->updateVisibility( mediaGroup, requestedCount );
+        else if(emuView->mediaLayout) emuView->mediaLayout->updateVisibility( mediaGroup, requestedCount );
     }
 
     bool halfTrackMode = dynamic_cast<LIBC64::Interface*>(emulator);

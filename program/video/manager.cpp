@@ -12,24 +12,22 @@
 #include "../thread/emuThread.h"
 #include "shaderParser.h"
 #include "../helper/settingsHelper.h"
-#include "props.cpp"
 #include "sync.cpp"
 #include "../debugger/dmaDebugger.h"
 #include "../tools/colors.h"
 #include "../tools/dataStorage.h"
 #include "../emuconfig/layouts/presentation.h"
+#include "scVideo.h"
 
 #include "../tools/chronos.h"
 #include "../view/status.h"
 
 uint8_t VideoManager::frameRenderPos = 0;
 uint8_t VideoManager::frameRenderTrigger = 1;
-bool VideoManager::needAUpdate = true;
+bool VideoManager::needUpdateForAllInstances = true;
 unsigned VideoManager::takeScreenShots = 0;
 
 std::vector<VideoManager*> videoManagers;
-
-#define SHADER_OFFSCREEN_WIDTH 4
 
 auto VideoManager::getInstance( Emulator::Interface* emulator ) -> VideoManager* {
 	
@@ -49,7 +47,7 @@ auto VideoManager::updateAll() -> void {
         if (videoManager->needUpdate())
             videoManager->update();
     }
-    needAUpdate = false;
+    needUpdateForAllInstances = false;
 }
 
 auto VideoManager::unloadDataStorage() -> void {
@@ -65,7 +63,7 @@ VideoManager::VideoManager(Emulator::Interface* emulator) {
     this->emulator = emulator;
     this->settings = Program::getSettings(emulator);
     this->palette = &emulator->palettes[0];        
-    this->colorCount = this->palette->paletteColors.size();        
+    this->colorCount = this->palette->paletteColors.size();
 
     countColorBits = 0;
 	
@@ -89,8 +87,6 @@ VideoManager::VideoManager(Emulator::Interface* emulator) {
     dataUpdatesPending = false;
 
     lumaChromaTable = new ColorLumaChroma[this->colorCount];
-    evenTable = new ColorLumaChroma[this->colorCount];
-    oddTable = new ColorLumaChroma[this->colorCount];
     colorTable = new uint32_t[this->colorCount];
     colorTableRGB10Even = new uint32_t[this->colorCount];
     colorTableRGB10Odd = new uint32_t[this->colorCount];
@@ -99,7 +95,8 @@ VideoManager::VideoManager(Emulator::Interface* emulator) {
 	phase = 0.0;
 	pal = true;
     colorSpectrum = 0;
-    crtMode = CrtMode::None;
+    legacyCRTonCPU = false;
+    suppressShaderByHotkey = false;
     scanlines = 0;
 
     phaseError = 22.5; 
@@ -108,20 +105,17 @@ VideoManager::VideoManager(Emulator::Interface* emulator) {
 
     currentHeight = 0;
 	
-    if (isAmiga()) {
-        tempDest = new uint32_t[2048 * 600]; // shres
-        std::memset(tempDest, 0, 2048 * 600 * 4);
-    } else {
-        tempDest = new uint32_t[1024 * 600];
-        std::memset(tempDest, 0, 1024 * 600 * 4);
-    }
-	
 	lumaRise = 1.0 / 2.0;
 	lumaFall = 1.0 / 1.2;
 
-    render.dest = nullptr;
-
     parser = new ShaderParser;
+    scVideo = new SCVideo(this);
+}
+
+VideoManager::~VideoManager() {
+    free();
+    delete parser;
+    delete scVideo;
 }
 
 auto VideoManager::update() -> void {
@@ -140,15 +134,8 @@ auto VideoManager::update() -> void {
         convertLumaChromaToRGB();
     }
 
-    if ( crtMode == CrtMode::Cpu ) {
-        calculateGamma();
-
-        if ((countColorBits == 4) && useLumaDelay())
-            calculateLumaDelay();
-
-        injectPhaseTransferError();
-        convertLumaChromaToInteger();
-    }
+    if (legacyCRTonCPU)
+        scVideo->update();
     
     updateListingColors();
     
@@ -244,7 +231,7 @@ auto VideoManager::generateC64ColorSpectrum() -> void {
 }
 
 auto VideoManager::lumaChromaMode() -> bool {
-    return (crtMode == CrtMode::Cpu) || ( (crtMode == CrtMode::Gpu) && shaderRgb10BitInput() );
+    return legacyCRTonCPU || shaderRgb10BitInput();
 }
 
 auto VideoManager::normalizeColorSpectrumPalGamma( double& color ) -> void {
@@ -334,53 +321,12 @@ auto VideoManager::convertLumaChromaToRGB() -> void {
     }
 }
 
-auto VideoManager::calculateGamma() -> void {
-    double scanlineShade = 1.0 - (double)scanlines / 100.0;
-    
-	// we precalculate the requested adjustments for each color state.
-	// besides, we apply adjustments on out-of-range color values to
-	// use this later on intermediate values for more precise final results
-	for(int c = 0; c < (256 * 3); c++) {
-		
-		double c1 = (double)(c - 256);
-		
-		if (pal && (colorSpectrum == 2))
-			normalizeColorSpectrumPalGamma( c1 );
-		
-		adjustGamma( c1 );
-		
-		// make sure the final color channel is integer with a precision of 8 bit
-        preCalcGamma[c] = uclamp8( c1 );
-		
-		// to emulate scanlines with a given intensity, the colors of the
-		// adjacent lines will be blended together with reduced luminance.
-		// that's why we precalculate the result of mixing two colors too.
-		// formula: (a + b) / 2
-		// if there is no shade, the scanline is black and fully visible. 
-		// otherwise, the original mixed color will be visible.
-		preCalcScanline[c * 2] = uclamp8( c1 * scanlineShade );
-
-		// the mixing formula above could produce uneven results: x.5
-		// the color channel can be an integer value only, but
-		// applying adjustments on a virtual fractional value results in more
-		// precise final values.
-		c1 = (double)((c - 256) + 0.5);
-		
-		if (pal && (colorSpectrum == 2))
-			normalizeColorSpectrumPalGamma(c1);
-		
-		adjustGamma( c1 );
-                        
-		preCalcScanline[c * 2 + 1] = uclamp8( c1 * scanlineShade );
-	}
-}
-
 inline auto VideoManager::adjustBrightness(double& c) -> void {
     
     c += brightness;
 }
 
-inline auto VideoManager::adjustGamma(double& c) -> void {
+auto VideoManager::adjustGamma(double& c) -> void {
     
     if(gamma == 1.0)
         return;
@@ -419,170 +365,9 @@ inline auto VideoManager::adjustSaturation(double& r, double& g, double& b) -> v
     b = ((b - grayscale) * saturation) + grayscale;
 }
 
-auto VideoManager::injectPhaseTransferError() -> void {
-    
-    // Next we encode/decode PAL signal.
-    // C64 transfers PAL's V component 180° phase shifted (change sign) each odd line.
-    // The receiver translates it back by changing the sign of V component again.
-    // If there is no phase error during transmission, this process would be useless.
-    // You already assume it, the real world is not ideal.
-    // To explain this, let's have a look at what's the problem with NTSC.
-    // A sender adds some degree of hue(V component) errors while transmitting the signal.
-    // There is a setting, called tint, on each NTSC TV.
-    // This way you can correct a great portion of the hue error of a specific sender.
-    // Of course, the hue error isn't constant, means you can't correct it completely.
-    // That's why NTSC is called: never the same color
-    // back to PAL and the approach to stabilize hue.
-    // Even lines: same transmission as NTSC, the transferred signal is received with an unknown phase shift error.
-    // In comparison to NTSC the information is stored in TV(delay line)
-    // odd lines: V component is phase shifted by 180° before transmission. (simply means the V value change sign).
-    // The transmission adds a similar phase shift error within such a short time of one display line.
-    // Receiver (TV) reverses sign of V component, which includes a similar phase shift error like happened in even line.
-    // Now the receiver already has the U/V data of the even line, which is shifted by an unknown phase error from the real U/V data.
-    // And there is the U/V data of the odd line that is shifted by a similar phase error but in the other
-    // direction of the even line data. So we simply have to calculate the average between odd and even data to get
-    // the original value. A tint correction like NTSC would be unnecessary.
-    // The hue error is a lot smaller than NTSC, because the error doesn't shift that much in the short period of a scanline.
-    // Of course, there are some disadvantages of this approach.
-    // 1. the vertical resolution is halved, because in PAL 2 lines will be blended.
-    // 2. if sender adds a huge phase shift error to U/V, the receiver can indeed reconstruct the original hue
-    // by averaging data from even and odd lines, but the overall saturation will be lowered.
-    // Delay lines will be saved in an analog way. Depending on TV quality, adjacent lines are desaturated differently.
-	// This effect is known as (Hanover Bars)
-    
-	// we have already calculated the values for U and V
-	// U = cos( angle ) * modifier( contrast and/or saturation )
-	// V = sin( angle ) * modifier( contrast and/or saturation )
-	// we want to add the phase error without complete recalculation
-	// to do this we have to use additions theorems:
-	// i.e. sin( a + b ) = sin a cos b + cos a sin b
-	// i.e. sin( a - b ) = sin a cos b - cos a sin b
-	// a is the original phase angle
-	// b is the phase error
-	// the modifier for contrast/saturation is already applied on U/V
-	// so we take this into account
-	// i.e. sin( a + b ) * modifier = modifier * (sin a cos b + cos a sin b)
-	//								= modifier * sin a cos b + modifier * cos a sin b
-	// we have already calculated: V = modifier * sin a , U = modifier * cos a
-	// after substitution we get:
-	//								= V * cos b + U * sin b
-	
-    double rotU = std::cos( phaseError * M_PI / 180.0 );	// cos b
-    double rotV = std::sin( phaseError * M_PI / 180.0 );	// sin b
-
-    for (unsigned c = 0; c < colorCount; c++) {
-		
-		evenTable[c].y = lumaChromaTable[c].y;
-		// phase shifted chroma, received in TV (PAL, NTSC)
-		evenTable[c].u_i = lumaChromaTable[c].u_i * rotU - lumaChromaTable[c].v_q * rotV;
-		evenTable[c].v_q = lumaChromaTable[c].v_q * rotU + lumaChromaTable[c].u_i * rotV;
-        
-		if (pal) {
-			// same phase error but shifted in the opposite direction (PAL)
-			oddTable[c].y = lumaChromaTable[c].y;
-			oddTable[c].u_i = lumaChromaTable[c].uOdd * rotU - lumaChromaTable[c].vOdd * rotV * -1;
-			oddTable[c].v_q = lumaChromaTable[c].vOdd * rotU + lumaChromaTable[c].uOdd * rotV * -1;
-		}
-    }
-}
-
-auto VideoManager::convertLumaChromaToInteger() -> void {
-	// luma changes overshoot then continue to oscillate a few pixels.
-    // i.e. a blur of 1 means the luma of both neighboring pixels are weighted with 25% each
-    // and the center pixel is weighted with 50 %
-    double neighbour = blur * 0.25;
-    double center = 1.0 - neighbour * 2.0;
-    unsigned scalerLuma = pal ? 11 : 10;    
-	
-	for (unsigned c = 0; c < colorCount; c++) {
-
-        // for performance reasons, we want to calculate the crt frame with integer later on.
-        // we need to scale up with at least 8 bits to reconvert back to RGB lossless.
-		evenTable[c].u_i_s = (int32_t) (evenTable[c].u_i * double(1 << 8) + (evenTable[c].u_i < 0 ? -0.5 : 0.5));
-		evenTable[c].v_q_s = (int32_t) (evenTable[c].v_q * double(1 << 8) + (evenTable[c].v_q < 0 ? -0.5 : 0.5));
-        
-        // we scale up with 11 bits instead of 8, why ? read on
-        // after chroma subsampling (adding 4 pixels), the scaling of chroma increases to 10 bits,
-        // and after adding the final pixel to delayed pixel the scaling of chroma increases to 11 bits.
-        // chroma and luma need to be scaled the same to apply math on it.
-        // average color (horizontal) = (pixel1 + pixel2 + pixel3 + pixel4) / 4
-        // average color (vertical)   = (average color (horizontal) + delayed average color of last line) / 2
-        // 
-        // pFinal = ((p1 + p2 + p3 + p4) / 4 + (pLast1 + pLast2 + pLast3 + pLast4) / 4 ) / 2
-        // pFinal * 2 = (p1 + p2 + p3 + p4) / 4 + (pLast1 + pLast2 + pLast3 + pLast4) / 4
-        // pFinal * 8 = p1 + p2 + p3 + p4 + pLast1 + pLast2 + pLast3 + pLast4
-        
-        // so we can add all 8 pixels first and divide later on by 8 to get the averaged pixel.
-        // for ntsc there isn't a delay line. we scale up 2 bits only.
-        
-        evenTable[c].y_s = (int32_t) (evenTable[c].y * center * double(1 << scalerLuma) + (evenTable[c].y < 0 ? -0.5 : 0.5));
-        evenTable[c].y_s_blur = (int32_t) (evenTable[c].y * neighbour * double(1 << scalerLuma) + (evenTable[c].y < 0 ? -0.5 : 0.5));
-		
-		if (pal) {
-			oddTable[c].y_s = evenTable[c].y_s;
-			oddTable[c].y_s_blur = evenTable[c].y_s_blur;
-			oddTable[c].u_i_s = (int32_t) (oddTable[c].u_i * double(1 << 8) + (oddTable[c].u_i < 0 ? -0.5 : 0.5));
-			oddTable[c].v_q_s = (int32_t) (oddTable[c].v_q * double(1 << 8) + (oddTable[c].v_q < 0 ? -0.5 : 0.5));						
-		}				
-	}
-}
-
-auto VideoManager::calculateLumaDelay() -> void {
-	
-	double yStep[4];
-	double y;
-	double yNext;
-	double diff;
-	bool stepChange;
-	int direction;
-    
-    double _lumaRise = lumaRise == 0.0 ? 1.0 : lumaRise;
-    double _lumaFall = lumaFall == 0.0 ? 1.0 : lumaFall;
-	
-	double neighbour = blur * 0.25;
-    double center = 1.0 - neighbour * 2.0;
-    unsigned scalerLuma = pal ? 11 : 10;  
-	
-	// calculate all combinations for 4 adjacent pixel
-	for (unsigned j = 0; j <= 0xffff; j++ ) {
-		
-		uint8_t p3 = j & 0xf;
-		uint8_t p2 = (j >> 4) & 0xf;
-		uint8_t p1 = (j >> 8) & 0xf;
-		uint8_t p0 = (j >> 12) & 0xf;
-						
-		yStep[0] = lumaChromaTable[p0].y;
-		yStep[1] = lumaChromaTable[p1].y;
-		yStep[2] = lumaChromaTable[p2].y;
-		yStep[3] = lumaChromaTable[p3].y;		
-		
-		diff = 0.0;
-		y = yStep[0];
-		
-		for (unsigned i = 0; i < 3; i++) {
-			
-			yNext = yStep[i+1];
-			
-			stepChange = yStep[i] != yNext;
-			
-			double stepDiff = yNext - y;
-			
-			if (stepChange)
-				diff = stepDiff;
-			
-			direction = (stepDiff < 0.0) ? -1 : ( (stepDiff > 0.0) ? 1 : 0 );
-			
-			if (direction == 1)
-				// don't rise higher than real value
-				y = std::min( y + (diff * _lumaRise), yNext );
-			else if (direction == -1)
-				// don't fall lower than real value
-				y = std::max( y + (diff * _lumaFall), yNext );
-		}
-		
-		preCalcLumaCenter[j] = (int32_t) (y * center * double(1 << scalerLuma) + (y < 0 ? -0.5 : 0.5));
-		preCalcLumaNeighbour[j] = (int32_t) (y * neighbour * double(1 << scalerLuma) + (y < 0 ? -0.5 : 0.5));
-	}
+auto VideoManager::toggleShaderTemporary() -> bool {
+    suppressShaderByHotkey ^= 1;
+    return suppressShaderByHotkey;
 }
 
 template<typename T, uint8_t options> auto VideoManager::renderFrame(const T* src, unsigned width, unsigned height, unsigned srcPitch ) -> void {
@@ -596,16 +381,19 @@ template<typename T, uint8_t options> auto VideoManager::renderFrame(const T* sr
     constexpr bool isPause = options & 0x10;
     constexpr bool lores = !hires && !shres;
     bool iHold = interlace && !field && !interlaceFields;
-    bool suppressShader = program->warp.disableShader && ((program->warp.mode == Program::Warp::Normal) || (program->warp.mode == Program::Warp::Aggressive));
+    bool suppressShader = suppressShaderByHotkey
+    || (
+        program->warp.disableShader && ((program->warp.mode == Program::Warp::Normal) || (program->warp.mode == Program::Warp::Aggressive))
+    );
     bool rewind = audioManager->rewind;
     uint8_t gpuOptions = iHold | (interlace << 1) | (suppressShader << 2) | (isPause << 5) | (rewind << 6);
 
-    if (needAUpdate)
+    if (needUpdateForAllInstances)
         updateAll();
 
     bool cropCoordUpdated = emulator->cropCoordUpdated(cropTop, cropLeft);
     if (rebuildShader) {
-        if (crtMode == CrtMode::Gpu) {
+        if (!legacyCRTonCPU) {
             auto appData = videoDriver->getAppData();
             if (appData) {
                 appData->cropTop = (float)cropTop;
@@ -684,15 +472,12 @@ template<typename T, uint8_t options> auto VideoManager::renderFrame(const T* sr
 
         renderToRgbWithDma<T, interlace, field>(width, height, src, srcPitch, gpuData, gpuPitch - width);
 
-    } else if ( suppressShader || (crtMode == CrtMode::None) ) {
-        if (!videoDriver->lock(gpuData, gpuPitch, width, height, gpuOptions))
-            return;
+    } else if (suppressShader) {
+        goto Typical;
 
-        renderToRgb<T, interlace, field>(width, height, src, srcPitch, gpuData, gpuPitch - width);
+    } else if (!legacyCRTonCPU) {
 
-	} else if (crtMode == CrtMode::Gpu) {
         if (shaderRgb10BitInput()) {
-
             if (!videoDriver->lock(gpuData, gpuPitch, width, height, gpuOptions | (uint8_t)DRIVER::OPT_RGB10 ))
                 goto Typical;
 
@@ -705,12 +490,15 @@ Typical:
 
             renderToRgb<T, interlace, field>(width, height, src, srcPitch, gpuData, gpuPitch - width);
         }
-	} else {
+	} else { // old legacy CRT over CPU
         if (!videoDriver->lock(gpuData, gpuPitch, width, (scanlines && !interlace) ? (height << 1) : height, gpuOptions))
             return;
 
-        renderCrt<T, options>(width, height, src, srcPitch, iHold ? nullptr : gpuData, gpuPitch - width, cropTop);
-	}		           
+        scVideo->renderCrt<T>(width, height, src, srcPitch, iHold ? nullptr : gpuData, gpuPitch - width, cropTop, getRenderOptions<options>());
+	}
+
+    if (audioManager->lumaInterference.enabled)
+        sampleLuma(width, height, (uint8_t*)src, srcPitch);
 
     videoDriver->unlockAndRedraw( );
 }
@@ -830,6 +618,31 @@ template<typename T, bool interlace, bool field> inline auto VideoManager::rende
             dest += destPitch;
         }
     }
+}
+
+auto VideoManager::sampleLuma(unsigned width, unsigned height, const uint8_t* src, unsigned srcPitch) -> void {
+    unsigned mask = (1 << countColorBits) - 1;
+    float lum;
+    auto& ali = audioManager->lumaInterference;
+
+    for(unsigned h = 0; h < height; h++) {
+        lum = 0.0;
+        for(unsigned w = 0; w < width; w++) {
+            lum += static_cast<float>(lumaChromaTable[*src++ & mask].y);
+        }
+
+        ali.avgLines[h] = lum / (static_cast<float>(width) * 3.0f);
+        src += srcPitch;
+    }
+
+    lum = 0.0;
+    for(unsigned h = 0; h < height; h++)
+        lum += ali.avgLines[h];
+
+    ali.avgFrame = lum / static_cast<float>(height);
+
+    ali.avgLines[height] = 0.0;
+    ali.lines = height + 1;
 }
 
 #define screenshot3channel(x) { auto& _x = x; *dest++ = _x.r; *dest++ = _x.g; *dest++ = _x.b; }
@@ -971,366 +784,9 @@ template<typename T, bool interlace, bool field> auto VideoManager::renderToLuma
     }
 }
 
-template<typename T, uint8_t options> auto VideoManager::renderCrt(unsigned width, unsigned height, const T* src, unsigned srcPitch, unsigned* dest, unsigned destPitch, unsigned& cropTop ) -> void {
-    constexpr bool interlace = options & 3;
-	render.width = width;
-    render.height = height;
-	render.srcPitch = srcPitch;
-	render.destPitch = destPitch;
-    render.options = getRenderOptions<options>();
-    render.fieldDest = tempDest;
-	render.dest = dest ? dest : tempDest;
-	render.scanlineDest = nullptr;
-    render.oddLine = !cropTop ? 0x80 : ((cropTop >> interlace) & 1);
-    render.src = (uint8_t*)src;
-
-    switch(render.options & 0x5f) {
-        default:
-        case 0: pal ? renderPalCrt<0, T>() : renderNtscCrt<0, T>(); break;
-        case 1: pal ? renderPalCrt<1, T>() : renderNtscCrt<1, T>(); break; // Scanlines
-        case 2: pal ? renderPalCrt<2, T>() : renderNtscCrt<2, T>(); break; // RF
-        case 3: pal ? renderPalCrt<3, T>() : renderNtscCrt<3, T>(); break; // Scanlines + RF
-        case 4: pal ? renderPalCrt<4, T>() : renderNtscCrt<4, T>(); break; // Interlace
-        case 6: pal ? renderPalCrt<6, T>() : renderNtscCrt<6, T>(); break; // Interlace + RF
-        case 12: pal ? renderPalCrt<12, T>() : renderNtscCrt<12, T>(); break; // Interlace other field
-        case 14: pal ? renderPalCrt<14, T>() : renderNtscCrt<14, T>(); break; // Interlace other field + RF
-
-        case 20: pal ? renderPalCrt<20, T>() : renderNtscCrt<20, T>(); break; // Interlace(Hold)
-        case 22: pal ? renderPalCrt<22, T>() : renderNtscCrt<22, T>(); break; // Interlace(Hold) + RF
-        case 28: pal ? renderPalCrt<28, T>() : renderNtscCrt<28, T>(); break; // Interlace(Hold) other field
-        case 30: pal ? renderPalCrt<30, T>() : renderNtscCrt<30, T>(); break; // Interlace(Hold) other field + RF
-
-        case 68: pal ? renderPalCrt<68, T>() : renderNtscCrt<68, T>(); break; // Interlace toggle
-        case 70: pal ? renderPalCrt<70, T>() : renderNtscCrt<70, T>(); break; // Interlace toggle + RF
-
-            // other combinations don't make sense, like Scanlines + Interlace
-    }
-}
-
 auto VideoManager::useLumaDelay() -> bool {
 
 	return lumaFall > 0.0 || lumaRise > 0.0;
-}
-
-auto VideoManager::useRegionEncoding() -> bool {
-    return (hanoverBars && pal) || phaseError > 0.0;
-}
-
-template<uint8_t options, typename T> auto VideoManager::renderPalCrt( ) -> void {
-    
-	static int32_t x1 = (int32_t) (((double) 1.0 / (double) 0.493) * double(1 << 8) + 0.5);
-    static int32_t x2 = (int32_t) (((double) 1.0 / (double) 0.877) * double(1 << 8) + 0.5);
-    static int32_t x3 = (int32_t) (0.3939307027516405140450117660881 * double(1 << 8) + 0.5);
-    static int32_t x4 = (int32_t) (0.58080920903109757400461150856936 * double(1 << 8) + 0.5);
-
-    constexpr bool withScanlines = options & 1;
-    constexpr bool lumaDelay = options & 2;
-    constexpr bool interlace = options & 4;
-    constexpr bool field = options & 8;
-    constexpr bool iHold = options & 16;
-    constexpr bool laceToggle = options & 64;
-
-    Render& re = render;
-
-    unsigned iRate = (100 - interlaceDecay);
-	
-	const T* _src = (T*)re.src;
-	
-	ColorLumaChroma* lineTable;
-	ColorRgb* lineBeforeDest = nullptr;
-	ColorLumaChroma yuv;
-    RGBDescriptor colorI;
-	int32_t uSubSample, vSubSample;
-    unsigned mask = (1 << countColorBits) - 1;
-
-	_src -= 2;
-    const T* srcDelay = _src;
-
-    if (re.oddLine & 0x80) { // there is no line before, so we reuse this line for delay line
-        re.oddLine = 0;
-        if (interlace && field)
-            srcDelay += re.width + re.srcPitch;
-    } else {
-        srcDelay -= re.width + re.srcPitch;
-        if (interlace)
-            srcDelay -= re.width + re.srcPitch;
-    }
-
-    lineTable = !re.oddLine ? oddTable : evenTable;
-
-	uSubSample = lineTable[ srcDelay[0] & mask ].u_i_s + lineTable[ srcDelay[1] & mask ].u_i_s + lineTable[ srcDelay[2] & mask ].u_i_s;
-	vSubSample = lineTable[ srcDelay[0] & mask ].v_q_s + lineTable[ srcDelay[1] & mask ].v_q_s + lineTable[ srcDelay[2] & mask ].v_q_s;
-
-	// delay line
-	for (unsigned w = 0; w < re.width; w++) {
-		uSubSample += lineTable[ srcDelay[3] & mask ].u_i_s;
-		vSubSample += lineTable[ srcDelay[3] & mask ].v_q_s;
-
-		delayLine[w].u_i_s = uSubSample;
-		delayLine[w].v_q_s = vSubSample;
-
-		uSubSample -= lineTable[ srcDelay[0] & mask ].u_i_s;
-		vSubSample -= lineTable[ srcDelay[0] & mask ].v_q_s;
-
-        srcDelay++;
-	}
-	
-	for(unsigned h = 0; h < re.height; h++) {
-
-        if (interlace && !laceToggle && ((!field && (h & 1)) || (field && !(h & 1)))) {
-            if (!iHold || field) {
-                if (re.fieldDest) {
-                    std::memcpy(re.dest, re.fieldDest, re.width * 4);
-                    re.fieldDest += re.width;
-                }
-            }
-            _src += re.width;
-            re.dest += re.width;
-
-        } else {
-            lineTable = re.oddLine ? oddTable : evenTable;
-            lineBeforeDest = &lineBefore[0];
-
-            uSubSample = lineTable[ _src[0] & mask ].u_i_s + lineTable[ _src[1] & mask ].u_i_s + lineTable[ _src[2] & mask ].u_i_s;
-            vSubSample = lineTable[ _src[0] & mask ].v_q_s + lineTable[ _src[1] & mask ].v_q_s + lineTable[ _src[2] & mask ].v_q_s;
-
-            for(unsigned w = 0; w < re.width; w++) {
-
-                uSubSample += lineTable[ _src[3] & mask ].u_i_s;
-                vSubSample += lineTable[ _src[3] & mask ].v_q_s;
-
-                yuv.u_i_s = uSubSample + delayLine[w].u_i_s;
-                yuv.v_q_s = vSubSample + delayLine[w].v_q_s;
-
-                if (!lumaDelay)
-                    yuv.y_s = lineTable[ _src[1] & mask ].y_s_blur + lineTable[ _src[2] & mask ].y_s + lineTable[ _src[3] & mask ].y_s_blur;
-
-                else {
-                    uint16_t _pos = ((_src[-1] & mask) << 12) | ((_src[0] & mask) << 8) | ((_src[1] & mask) << 4) | (_src[2] & mask);
-                    uint16_t _posL = ((_src[-2] & mask) << 12) | ((_src[-1] & mask) << 8) | ((_src[0] & mask) << 4) | (_src[1] & mask);
-                    uint16_t _posR = ((_src[0] & mask) << 12) | ((_src[1] & mask) << 8) | ((_src[2] & mask) << 4) | (_src[3] & mask);
-
-                    yuv.y_s = preCalcLumaNeighbour[_posL] + preCalcLumaCenter[_pos] + preCalcLumaNeighbour[_posR];
-                }
-
-                delayLine[w].u_i_s = uSubSample;
-                delayLine[w].v_q_s = vSubSample;
-
-                if (re.oddLine) {
-                    yuv.u_i_s = (yuv.u_i_s * this->hanoverBars) >> 7;
-                    yuv.v_q_s = (yuv.v_q_s * this->hanoverBars) >> 7;
-
-                } else if (this->hanoverBarsAlt) {
-                    yuv.u_i_s = (yuv.u_i_s * this->hanoverBarsAlt) >> 7;
-                    yuv.v_q_s = (yuv.v_q_s * this->hanoverBarsAlt) >> 7;
-                }
-
-                int16_t r = (yuv.y_s + ((x2 * yuv.v_q_s) >> 8) + 1024) >> 11;
-                int16_t g = (yuv.y_s - ((x3 * yuv.u_i_s + x4 * yuv.v_q_s) >> 8) + 1024) >> 11;
-                int16_t b = (yuv.y_s + ((x1 * yuv.u_i_s) >> 8) + 1024) >> 11;
-
-                if constexpr (interlace) {
-                    colorI.r = preCalcGamma[ r + 256 ];
-                    colorI.g = preCalcGamma[ g + 256 ];
-                    colorI.b = preCalcGamma[ b + 256 ];
-                    *re.dest++ = 255 << 24 | colorI.r << 16 | colorI.g << 8 | colorI.b;
-
-                    if constexpr(laceToggle)
-                        *re.fieldDest++ = 255 << 24 | colorI.r << 16 | colorI.g << 8 | colorI.b;
-
-                    else if constexpr(!iHold) {
-                        colorI.r = (colorI.r * iRate) / 100;
-                        colorI.g = (colorI.g * iRate) / 100;
-                        colorI.b = (colorI.b * iRate) / 100;
-                        *re.fieldDest++ = 255 << 24 | colorI.r << 16 | colorI.g << 8 | colorI.b;
-                    }
-                } else
-                    *re.dest++ = 255 << 24 | preCalcGamma[ r + 256 ] << 16 | preCalcGamma[ g + 256 ] << 8 | preCalcGamma[ b + 256 ];
-
-                if constexpr (withScanlines) {
-                    if (re.scanlineDest) {
-                        *re.scanlineDest++ = 255 << 24 | preCalcScanline[r + lineBeforeDest->rInt + 512] << 16
-                                              | preCalcScanline[g + lineBeforeDest->gInt + 512] << 8
-                                              | preCalcScanline[b + lineBeforeDest->bInt + 512];
-                    }
-
-                    lineBeforeDest->rInt = r;
-                    lineBeforeDest->gInt = g;
-                    lineBeforeDest->bInt = b;
-                    lineBeforeDest++;
-                }
-
-                uSubSample -= lineTable[ _src[0] & mask ].u_i_s;
-                vSubSample -= lineTable[ _src[0] & mask ].v_q_s;
-
-                _src++;
-            }
-
-            if constexpr (interlace && iHold)
-                re.fieldDest += re.width;
-
-            re.oddLine ^= 1;
-		}
-		_src += re.srcPitch;
-		re.dest += re.destPitch;
-
-        if constexpr (interlace) {
-            re.fieldDest += re.destPitch;
-
-        } else if constexpr (withScanlines) {
-			re.scanlineDest = re.dest;
-			re.dest +=	re.width + re.destPitch;
-		}
-	}
-
-    if constexpr (withScanlines) {
-        if ((re.options & 0x80) == 0) {
-            lineBeforeDest = &lineBefore[0];
-            for (unsigned w = 0; w < re.width; w++) {
-                *re.scanlineDest++ = 255 << 24 | preCalcScanline[(lineBeforeDest->rInt << 1) + 512] << 16
-                                     | preCalcScanline[(lineBeforeDest->gInt << 1) + 512] << 8
-                                     | preCalcScanline[(lineBeforeDest->bInt << 1) + 512];
-
-                lineBeforeDest++;
-            }
-        }
-    }
-	
-	re.src = (uint8_t*)_src;
-}
-
-template<uint8_t options, typename T> auto VideoManager::renderNtscCrt( ) -> void {
-	
-	static int32_t x1 = (int32_t) (1.630 * double(1 << 8) + 0.5);
-    static int32_t x2 = (int32_t) (0.317 * double(1 << 8) + 0.5);
-    static int32_t x3 = (int32_t) (0.378 * double(1 << 8) + 0.5);
-    static int32_t x4 = (int32_t) (0.466 * double(1 << 8) + 0.5);
-	static int32_t x5 = (int32_t) (1.089 * double(1 << 8) + 0.5);
-	static int32_t x6 = (int32_t) (1.677 * double(1 << 8) + 0.5);
-
-    constexpr bool withScanlines = options & 1;
-    constexpr bool lumaDelay = options & 2;
-    constexpr bool interlace = options & 4;
-    constexpr bool field = options & 8;
-    constexpr bool iHold = options & 16;
-    constexpr bool laceToggle = options & 64;
-
-    Render& re = render;
-	ColorLumaChroma yiq;
-    RGBDescriptor colorI;
-	ColorRgb* lineBeforeDest = nullptr;
-    unsigned mask = (1 << countColorBits) - 1;
-	
-	int32_t iSubSample, qSubSample;
-    unsigned iRate = (100 - interlaceDecay);
-	const T* _src = (T*)re.src;
-    _src -= 2;
-	
-	for(unsigned h = 0; h < re.height; h++) {
-
-        if (interlace && !laceToggle && ((!field && (h & 1)) || (field && !(h & 1)))) {
-            if (!iHold || field) {
-                std::memcpy(re.dest, re.fieldDest, re.width * 4);
-                re.fieldDest += re.width;
-            }
-            _src += re.width;
-            re.dest += re.width;
-
-        } else {
-            iSubSample = evenTable[ _src[0] & mask ].u_i_s + evenTable[ _src[1] & mask ].u_i_s + evenTable[ _src[2] & mask ].u_i_s;
-            qSubSample = evenTable[ _src[0] & mask ].v_q_s + evenTable[ _src[1] & mask ].v_q_s + evenTable[ _src[2] & mask ].v_q_s;
-
-            lineBeforeDest = &lineBefore[0];
-
-            for(unsigned w = 0; w < re.width; w++) {
-
-                iSubSample += evenTable[ _src[3] & mask ].u_i_s;
-                qSubSample += evenTable[ _src[3] & mask ].v_q_s;
-
-                yiq.u_i_s = iSubSample;
-                yiq.v_q_s = qSubSample;
-
-                if (!lumaDelay)
-                    yiq.y_s = evenTable[ _src[1] & mask ].y_s_blur + evenTable[ _src[2] & mask ].y_s + evenTable[ _src[3] & mask ].y_s_blur;
-                else {
-                    uint16_t _pos = ((_src[-1] & mask) << 12) | ((_src[0] & mask) << 8) | ((_src[1] & mask) << 4) | (_src[2] & mask);
-                    uint16_t _posL = ((_src[-2] & mask) << 12) | ((_src[-1] & mask) << 8) | ((_src[0] & mask) << 4) | (_src[1] & mask);
-                    uint16_t _posR = ((_src[0] & mask) << 12) | ((_src[1] & mask) << 8) | ((_src[2] & mask) << 4) | (_src[3] & mask);
-
-                    yiq.y_s = preCalcLumaNeighbour[_posL] + preCalcLumaCenter[_pos] + preCalcLumaNeighbour[_posR];
-                }
-
-                int16_t r = (yiq.y_s + ((x1 * yiq.u_i_s + x2 * yiq.v_q_s) >> 8) + 512) >> 10;
-                int16_t g = (yiq.y_s - ((x3 * yiq.u_i_s + x4 * yiq.v_q_s) >> 8) + 512) >> 10;
-                int16_t b = (yiq.y_s - ((x5 * yiq.u_i_s - x6 * yiq.v_q_s) >> 8) + 512) >> 10;
-
-                if constexpr (interlace) {
-                    colorI.r = preCalcGamma[ r + 256 ];
-                    colorI.g = preCalcGamma[ g + 256 ];
-                    colorI.b = preCalcGamma[ b + 256 ];
-                    *re.dest++ = 255 << 24 | colorI.r << 16 | colorI.g << 8 | colorI.b;
-
-                    if constexpr(laceToggle)
-                        *re.fieldDest++ = 255 << 24 | colorI.r << 16 | colorI.g << 8 | colorI.b;
-
-                    else if constexpr (!iHold) {
-                        colorI.r = (colorI.r * iRate) / 100;
-                        colorI.g = (colorI.g * iRate) / 100;
-                        colorI.b = (colorI.b * iRate) / 100;
-                        *re.fieldDest++ = 255 << 24 | colorI.r << 16 | colorI.g << 8 | colorI.b;
-                    }
-                } else
-                    *re.dest++ = 255 << 24 | preCalcGamma[ r + 256 ] << 16 | preCalcGamma[ g + 256 ] << 8 | preCalcGamma[ b + 256 ];
-
-                if constexpr (withScanlines) {
-                    if ( re.scanlineDest) {
-                        *re.scanlineDest++ = 255 << 24 | preCalcScanline[r + lineBeforeDest->rInt + 512] << 16
-                              | preCalcScanline[g + lineBeforeDest->gInt + 512] << 8
-                              | preCalcScanline[b + lineBeforeDest->bInt + 512];
-                    }
-
-                    lineBeforeDest->rInt = r;
-                    lineBeforeDest->gInt = g;
-                    lineBeforeDest->bInt = b;
-                    lineBeforeDest++;
-                }
-
-                iSubSample -= evenTable[ _src[0] & mask ].u_i_s;
-                qSubSample -= evenTable[ _src[0] & mask ].v_q_s;
-
-                _src++;
-            }
-
-            if constexpr (interlace && iHold)
-                re.fieldDest += re.width;
-        }
-		
-		_src += re.srcPitch;
-		re.dest += re.destPitch;
-
-        if constexpr (interlace) {
-            re.fieldDest += re.destPitch;
-
-        } else if constexpr (withScanlines) {
-            re.scanlineDest = re.dest;
-			re.dest +=	re.width + re.destPitch;
-		}
-	}
-
-    if constexpr (withScanlines) {
-        if ((re.options & 0x80) == 0) {
-            lineBeforeDest = &lineBefore[0];
-            for (unsigned w = 0; w < re.width; w++) {
-                *re.scanlineDest++ = 255 << 24 | preCalcScanline[(lineBeforeDest->rInt << 1) + 512] << 16
-                                     | preCalcScanline[(lineBeforeDest->gInt << 1) + 512] << 8
-                                     | preCalcScanline[(lineBeforeDest->bInt << 1) + 512];
-
-                lineBeforeDest++;
-            }
-        }
-    }
-	
-	re.src = (uint8_t*)_src;
 }
 
 auto VideoManager::convertRGBToYIQ(ColorLumaChroma* dest, ColorRgb* src) -> void {
@@ -1382,7 +838,7 @@ auto VideoManager::updateData(int offset, float data) -> void {
     emuThread->lockVideo();
     dataUpdates.push_back( dataUpdate );
     dataUpdatesPending = true;
-    needAUpdate = true;
+    needUpdateForAllInstances = true;
     emuThread->unlockVideo();
 }
 
@@ -1404,7 +860,7 @@ template<typename T> auto VideoManager::updateData(std::string ident, T data) ->
     emuThread->lockVideo();
     dataUpdates.push_back( dataUpdate );
     dataUpdatesPending = true;
-    needAUpdate = true;
+    needUpdateForAllInstances = true;
     emuThread->unlockVideo();
 }
 
@@ -1446,7 +902,7 @@ auto VideoManager::isAmiga() -> bool {
     return dynamic_cast<LIBAMI::Interface*>(emulator);
 }
 
-inline auto VideoManager::uclamp8(double x) -> uint8_t {
+auto VideoManager::uclamp8(double x) -> uint8_t {
     return std::min( std::max((int)(x + 0.5), 0), 255 );
 }
 
@@ -1461,7 +917,7 @@ template<uint8_t options> auto VideoManager::getRenderOptions() -> unsigned {
     constexpr bool hires = options & 4;
     constexpr bool shres = options & 8;
 
-    if (scanlines && !interlace) out |= 1; // surpress user requested scanlines if software requests interlace
+    if (scanlines && !interlace) out |= 1; // suppress user requested scanlines if software requests interlace
     if ((countColorBits == 4) && useLumaDelay()) out |= 2;
     if (interlace) {
         bool laceToggle = !!(frameOptions & 0x80);
@@ -1477,30 +933,15 @@ template<uint8_t options> auto VideoManager::getRenderOptions() -> unsigned {
 }
 
 auto VideoManager::free() -> void {
-    if (colorTable)
-        delete[] colorTable;
-
-    if (colorTableRGB10Odd)
-        delete[] colorTableRGB10Odd;
-    if (colorTableRGB10Even)
-        delete[] colorTableRGB10Even;
-
-    if (lumaChromaTable)
-        delete[] lumaChromaTable;                
+    delete[] colorTable;
+    delete[] colorTableRGB10Odd;
+    delete[] colorTableRGB10Even;
+    delete[] lumaChromaTable;
     
-    if (evenTable)
-        delete[] evenTable;
-        
-    if (oddTable)
-        delete[] oddTable;
-        
-    evenTable = oddTable = lumaChromaTable = nullptr;
+    lumaChromaTable = nullptr;
     colorTable = nullptr;
     colorTableRGB10Odd = nullptr;
     colorTableRGB10Even = nullptr;
-	
-	if (tempDest)
-		delete[] tempDest;
 }
 
 auto VideoManager::loadPreset() -> bool {
@@ -1515,11 +956,13 @@ auto VideoManager::loadPreset() -> bool {
 }
 
 auto VideoManager::loadPreset(const std::string& path) -> void {
+    suppressShaderByHotkey = false;
     std::vector<std::string> errors;
     loadPreset(path, errors);
 }
 
 auto VideoManager::loadPreset(const std::string& path, std::vector<std::string>& errors) -> ShaderPreset* {
+    suppressShaderByHotkey = false;
     ShaderParser* tempParser = new ShaderParser;
 
     bool res = tempParser->loadPreset(path);
@@ -1558,6 +1001,7 @@ auto VideoManager::loadPreset(const std::string& path, std::vector<std::string>&
 }
 
 auto VideoManager::addPreset(std::string path, bool prepend, std::vector<std::string>& errors) -> ShaderPreset* {
+    suppressShaderByHotkey = false;
     ShaderParser* tempParser = new ShaderParser;
     bool res = tempParser->loadPreset(path);
     GUIKIT::Vector::combine(errors, tempParser->errors);
@@ -1759,9 +1203,245 @@ auto VideoManager::getColorSpectrum(unsigned id, unsigned col) -> C64ColorSpectr
     return c64ColorSpectrum[id & 1][newLuma ? 0 : 1][col & 15];
 }
 
-VideoManager::~VideoManager() {
-    free();
-    delete parser;
+auto VideoManager::usePal(bool state) -> void {
+	pal = state;
+    requestUpdate();
+
+    auto appData = videoDriver->getAppData();
+    if (appData) {
+        appData->pal = (float)pal;
+        appData->subRegion = (float)emulator->getSubRegion();
+    }
+}
+
+auto VideoManager::useColorSpectrum(unsigned state) -> void {
+    colorSpectrum = !isC64() ? 0 : state;
+    requestUpdate();
+}
+
+auto VideoManager::setLegacyCrtMode(bool state) -> void {
+
+    if (this->legacyCRTonCPU != state)
+        rebuildShader = true;
+
+    this->legacyCRTonCPU = state;
+    requestUpdate();
+}
+
+auto VideoManager::setPalette(Emulator::Interface::Palette* palette) -> void {
+    this->palette = palette;
+
+    if (!colorSpectrum)
+        requestUpdate();
+}
+
+auto VideoManager::setSaturation(unsigned saturation) -> void {
+    this->saturation = (double)saturation / 100.0;
+    requestUpdate();
+}
+
+auto VideoManager::setContrast(unsigned contrast) -> void {
+    this->contrast = (double)contrast / 100.0;
+    requestUpdate();
+}
+
+auto VideoManager::setBrightness(unsigned brightness) -> void {
+    this->brightness = (double)brightness - 100.0;
+    requestUpdate();
+}
+
+auto VideoManager::setGamma(unsigned gamma) -> void {
+    this->gamma = (double)gamma / 100.0;
+    requestUpdate();
+}
+
+auto VideoManager::setNewLuma(bool state) -> void {
+    newLuma = state;
+    requestUpdate();
+}
+
+auto VideoManager::setPhase( int degree ) -> void {
+    phase = degree;
+    requestUpdate();
+}
+
+auto VideoManager::setPhaseError( float phaseError ) -> void {
+    this->phaseError = (double)phaseError;
+    requestUpdate();
+}
+
+auto VideoManager::setHanoverBars( int hanoverBars ) -> void {
+    int _oddSat = -1 * std::abs(hanoverBars);
+    this->hanoverBars = (int32_t)(((double)(100 + _oddSat) / 100.0) * 128.0);
+    this->hanoverBarsAlt = 0;
+
+    if (hanoverBars > 0)
+        this->hanoverBarsAlt = (int32_t)(((double)(100 + hanoverBars) / 100.0) * 128.0);
+
+    requestUpdate();
+}
+
+auto VideoManager::setBlur( unsigned blur ) -> void {
+    this->blur = (double)blur / 50.0;
+    requestUpdate();
+}
+
+auto VideoManager::setLumaRise( float pixel ) -> void {
+    lumaRise = pixel == 0.0 ? 0.0 : (double)(1.0 / (double)pixel);
+    requestUpdate();
+}
+
+auto VideoManager::setLumaFall( float pixel ) -> void {
+    lumaFall = pixel == 0.0 ? 0.0 : (double)(1.0 / (double)pixel);
+    requestUpdate();
+}
+
+auto VideoManager::setScanlines(unsigned intensity) -> void {
+    scanlines = intensity;
+    requestUpdate();
+}
+
+auto VideoManager::setInterlace(unsigned intensity) -> void {
+    interlaceDecay = intensity;
+    requestUpdate();
+}
+
+auto VideoManager::setInterlaceFields(bool state) -> void {
+    interlaceFields = state;
+    requestUpdate();
+}
+
+auto VideoManager::setData(const std::string& ident, float value) -> void {
+    if (activeEmulator != emulator)
+        rebuildShader = true;
+    else
+        for(auto& param : parser->shaderPreset.params) {
+            if (param.id == ident) {
+              //  videoDriver->waitRenderThread();
+                param.value = value;
+                break;
+            }
+        }
+}
+
+auto VideoManager::setData( unsigned offset, float value) -> void {
+    if (activeEmulator != emulator)
+        rebuildShader = true;
+    else {
+        auto& params = parser->shaderPreset.params;
+        if (offset < params.size()) {
+            // videoDriver->waitRenderThread();
+            params[offset].value = value;
+        }
+    }
+}
+
+auto VideoManager::getData(const std::string& ident) -> ShaderPreset::Param* {
+    for(auto& param : parser->shaderPreset.params) {
+        if (param.id == ident)
+            return &param;
+    }
+    return nullptr;
+}
+
+auto VideoManager::resetSettings() -> void {
+    settings->remove( "video_new_luma" );
+    settings->remove( "video_saturation" );
+    settings->remove( "video_brightness" );
+    settings->remove( "video_gamma" );
+    settings->remove( "video_contrast" );
+    settings->remove( "video_phase" );
+    settings->remove( "video_interlace_use" );
+    settings->remove( "video_interlace" );
+}
+
+auto VideoManager::resetLegacySettings() -> void {
+    settings->remove( "video_hanover_bars" );
+    settings->remove( "video_hanover_bars_use" );
+    settings->remove( "video_phase_error_use" );
+    settings->remove( "video_phase_error" );
+    settings->remove( "video_scanlines_use" );
+    settings->remove( "video_scanlines" );
+    settings->remove( "video_blur_use" );
+    settings->remove( "video_blur" );
+    settings->remove( "video_luma_rise_use" );
+    settings->remove( "video_luma_rise" );
+    settings->remove( "video_luma_fall_use" );
+    settings->remove( "video_luma_fall" );
+}
+
+auto VideoManager::getSettings() -> std::tuple<VPARAMST> {
+    unsigned _useSpectrum = settings->get<unsigned>("video_spectrum", 1);
+	unsigned _region = emulator->getRegionEncoding();
+	bool _pal = _region == Emulator::Interface::Region::Pal;
+
+    bool _legacyCrtMode = settings->get<bool>("video_crt_legacy", false);
+    bool moreError = isC64();
+
+    unsigned _saturation = settings->get<unsigned>("video_saturation", 100u,{0u, 200u});
+    unsigned _contrast = settings->get<unsigned>("video_contrast", 100u,{0u, 200u});
+    unsigned _gamma = settings->get<unsigned>("video_gamma", 100u,{30u, 280u});
+    unsigned _brightness = settings->get<unsigned>("video_brightness", 100u,{0, 200u});
+    int _phase = settings->get<int>("video_phase", 0,{-180, 180});
+    float _phaseError = settings->get<float>("video_phase_error", _pal ? (moreError ? 22.5f : 3.5f ) : 0, {-45.0, 45.0});
+    bool _usePhaseError = settings->get<bool>("video_phase_error_use", true);
+    bool _newLuma = settings->get<bool>("video_new_luma", true);
+    int _hanoverBars = settings->get<int>("video_hanover_bars", -10, {-100, 100});
+    bool _useHanoverBars = settings->get<bool>("video_hanover_bars_use", true);
+    unsigned _blur = settings->get<unsigned>("video_blur", 30,{0, 100});
+    bool _useBlur = settings->get<bool>("video_blur_use", true);
+    bool _useScanlines = settings->get<bool>("video_scanlines_use", false);
+    unsigned _scanlines = settings->get<unsigned>("video_scanlines", 33, {0, 100});
+    bool _useInterlace = settings->get<bool>("video_interlace_use", true);
+    unsigned _interlace = settings->get<unsigned>("video_interlace", 0, {0u, 100});
+
+    bool _useLumaRise = settings->get<bool>("video_luma_rise_use", moreError);
+	float _lumaRise = settings->get<float>("video_luma_rise", 2.0, {1.0, 4.0});
+	bool _useLumaFall = settings->get<bool>("video_luma_fall_use", moreError);
+	float _lumaFall = settings->get<float>("video_luma_fall", 1.2, {1.0, 4.0});
+
+    return std::make_tuple( VPARAMS);
+}
+
+auto VideoManager::reloadSettings(bool reloadPreset) -> void {
+    auto [VPARAMS] = getSettings();
+
+    setSaturation(_saturation);
+    setContrast(_contrast);
+    setBrightness(_brightness);
+    setGamma(_gamma);
+    setPhase(_phase);
+    setNewLuma(_newLuma);
+    setPhaseError(_usePhaseError ? _phaseError : 0 );
+    setHanoverBars( _useHanoverBars ? _hanoverBars : 0);
+    setScanlines(_useScanlines ? _scanlines : 0);
+    setInterlace(_useInterlace ? _interlace : 0);
+    setInterlaceFields( _useInterlace );
+    setBlur( _useBlur ? _blur : 0 );
+	setLumaRise( _useLumaRise ? _lumaRise : 0.0 );
+	setLumaFall( _useLumaFall ? _lumaFall : 0.0 );
+
+    usePal(_region == 0);
+    useColorSpectrum(_useSpectrum);
+    setLegacyCrtMode( _legacyCrtMode );
+
+    auto appData = videoDriver->getAppData();
+    if (appData)
+        appData->flags = (float)( pal && (colorSpectrum == 2));
+
+    if (reloadPreset)
+        loadPreset();
+
+    applyMeta();
+}
+
+auto VideoManager::applyMeta() -> void {
+    emulator->videoAddMeta( !legacyCRTonCPU && parser->needMetaData() );
+}
+
+auto VideoManager::requestUpdate() -> void {
+    colorTableUpdated = false;
+    needUpdateForAllInstances = true;
 }
 
 template auto VideoManager::renderFrame<uint8_t>(const uint8_t* src, unsigned width, unsigned height, unsigned srcPitch) -> void;

@@ -11,6 +11,7 @@
 namespace EmuConfigView {
 
 struct TabWindow;
+struct PresentationLayout;
 
 struct VideoBaseLayout : GUIKIT::VerticalLayout {
 
@@ -19,12 +20,11 @@ struct VideoBaseLayout : GUIKIT::VerticalLayout {
             GUIKIT::RadioBox palette;
             GUIKIT::RadioBox spectrumPALette;
             GUIKIT::RadioBox spectrumColodore;
-            GUIKIT::RadioBox rgb;
-            GUIKIT::RadioBox cpu;
-            GUIKIT::RadioBox gpu;
-
             GUIKIT::Widget spacer;
-            GUIKIT::Button reset;
+            GUIKIT::Label trLabel;
+            GUIKIT::RadioBox trOff;
+            GUIKIT::RadioBox trOn;
+            GUIKIT::RadioBox trAuto;
 
             Mode(bool withSpectrum);
         } mode;
@@ -32,11 +32,11 @@ struct VideoBaseLayout : GUIKIT::VerticalLayout {
         struct Option : GUIKIT::HorizontalLayout {
             GUIKIT::CheckBox newLuma;
             GUIKIT::CheckBox linearInterpolation;
+            GUIKIT::CheckBox audioInterference;
+            GUIKIT::CheckBox legacyCRTonCPU;
+            GUIKIT::Button legacyParams;
             GUIKIT::Widget spacer;
-            GUIKIT::Label trLabel;
-            GUIKIT::RadioBox trOff;
-            GUIKIT::RadioBox trOn;
-            GUIKIT::RadioBox trAuto;
+            GUIKIT::Button reset;
 
             Option(bool withSpectrum);
         } option;
@@ -47,40 +47,19 @@ struct VideoBaseLayout : GUIKIT::VerticalLayout {
         SliderLayout contrast;
         SliderLayout phase;
         SliderLayout interlace;
-        SliderLayout scanlines;
 
         View(bool withSpectrum);
     } view;
 
-    struct Encoding : GUIKIT::FramedVerticalLayout {
-        SliderLayout phaseError;
-        SliderLayout hanoverBars;
-        SliderLayout blur;
-
-        Encoding();
-    } encoding;
-
-    struct LumaDelay : GUIKIT::FramedVerticalLayout {
-        SliderLayout lumaRise;
-        SliderLayout lumaFall;
-
-        LumaDelay();
-    } lumaDelay;
-
-    VideoBaseLayout(bool withSpectrum);
-};
-
-struct VideoShaderLayout : GUIKIT::VerticalLayout {
-
-    struct Main : GUIKIT::FramedVerticalLayout {
+    struct Shader : GUIKIT::FramedVerticalLayout {
         struct Control : GUIKIT::HorizontalLayout {
             GUIKIT::Button unload;
+            GUIKIT::Button clearCache;
             GUIKIT::Widget spacer;
             GUIKIT::CheckBox yuvEncoding;
             GUIKIT::ImageView downloadShader;
             GUIKIT::Button loadDefaultShader;
 
-            GUIKIT::Button prependPreset;
             GUIKIT::Button appendPreset;
             GUIKIT::Button load;
 
@@ -90,7 +69,6 @@ struct VideoShaderLayout : GUIKIT::VerticalLayout {
         struct Info : GUIKIT::HorizontalLayout {
             GUIKIT::Label label;
             GUIKIT::Label loaded;
-            GUIKIT::Button clearCache;
             GUIKIT::Button toParams;
 
             Info();
@@ -104,26 +82,63 @@ struct VideoShaderLayout : GUIKIT::VerticalLayout {
             Progress();
         } progress;
 
-        Main();
+        Shader();
 
         std::vector<GUIKIT::Label*> errorLabels;
+    } shader;
+
+    VideoBaseLayout(bool withSpectrum);
+};
+
+struct SCVideoWindow : GUIKIT::Window {
+    PresentationLayout* presentation;
+
+    struct Main : GUIKIT::VerticalLayout {
+        struct Option : GUIKIT::HorizontalLayout {
+            GUIKIT::MultilineEdit multiLine;
+            GUIKIT::Button reset;
+
+            Option();
+        } option;
+
+        struct Encoding : GUIKIT::FramedVerticalLayout {
+            SliderLayout phaseError;
+            SliderLayout hanoverBars;
+            SliderLayout blur;
+            SliderLayout scanlines;
+
+            Encoding();
+        } encoding;
+
+        struct LumaDelay : GUIKIT::FramedVerticalLayout {
+            SliderLayout lumaRise;
+            SliderLayout lumaFall;
+
+            LumaDelay();
+        } lumaDelay;
+
+        Main(bool withLumaDelay);
     } main;
 
-    struct Favourite : GUIKIT::FramedVerticalLayout {
-        GUIKIT::ListView list;
+    auto build() -> void;
+    auto updateVisibillity() -> void;
+    auto translate() -> void;
 
-        struct Control : GUIKIT::HorizontalLayout {
-            GUIKIT::Widget spacer;
-            GUIKIT::Button remove;
-            GUIKIT::Button add;
+    SCVideoWindow(PresentationLayout* presentation);
+};
 
-            Control();
-        } control;
+struct VideoFavLayout : GUIKIT::FramedVerticalLayout {
+    GUIKIT::ListView list;
 
-        Favourite();
-    } favourite;
+    struct Control : GUIKIT::HorizontalLayout {
+        GUIKIT::Widget spacer;
+        GUIKIT::Button remove;
+        GUIKIT::Button add;
 
-    VideoShaderLayout();
+        Control();
+    } control;
+
+    VideoFavLayout();
 };
 
 struct VideoPassLayout : GUIKIT::FramedVerticalLayout {
@@ -319,8 +334,8 @@ struct VideoScreenShotLayout : GUIKIT::FramedVerticalLayout {
     } format;
 
     struct Options : GUIKIT::HorizontalLayout {
-        SliderLayout gun;
-        SliderLayout interval;
+        SimpleSliderLayout gun;
+        SimpleSliderLayout interval;
         GUIKIT::CheckBox delayScreenshot;
         Options();
     } options;
@@ -371,14 +386,12 @@ struct VideoMotionLayout : GUIKIT::VerticalLayout {
 
 struct VideoRewindLayout : GUIKIT::FramedVerticalLayout {
     GUIKIT::CheckBox enableRewind;
-    SliderLayout framesPerStep;
+    SimpleSliderLayout framesPerStep;
     SliderLayout bufferSize;
     GUIKIT::Button hotkey;
 
     VideoRewindLayout();
 };
-
-struct PresentationLayout;
 
 struct ParamEditor : GUIKIT::Window {
     ParamEditor(PresentationLayout* presentation);
@@ -390,6 +403,7 @@ struct ParamEditor : GUIKIT::Window {
     struct RadioLayout : GUIKIT::HorizontalLayout {
         GUIKIT::RadioBox boxes[MAX_RADIO_BOXES];
         GUIKIT::Button defaultButton;
+        GUIKIT::Widget spacer;
     } radioLay;
 
     GUIKIT::Image backImg;
@@ -414,12 +428,12 @@ struct PresentationLayout : GUIKIT::HorizontalLayout {
     GUIKIT::TreeViewItem tviMotion;
     GUIKIT::TreeViewItem tviRewind;
 
-    GUIKIT::TreeViewItem tviShader;
+    GUIKIT::TreeViewItem tviFav;
     std::vector<GUIKIT::TreeViewItem*> tviPasses;
     GUIKIT::TreeViewItem tviParams;
 
     VideoBaseLayout layBase;
-    VideoShaderLayout layShader;
+    VideoFavLayout layFav;
     VideoPassLayout layPass;
     VideoParamLayout layParam;
     VideoScreenTextLayout layScreenText;
@@ -434,6 +448,7 @@ struct PresentationLayout : GUIKIT::HorizontalLayout {
     GUIKIT::Image imgFolderOpen;
     GUIKIT::Image imgFolderClosed;
     GUIKIT::Image imgDocument;
+    GUIKIT::Image imgScript;
     GUIKIT::Image imgError;
     GUIKIT::Image pageUp;
     GUIKIT::Image pageDown;
@@ -449,14 +464,18 @@ struct PresentationLayout : GUIKIT::HorizontalLayout {
     GUIKIT::Image screenshotImage;
     GUIKIT::Image hdrImage;
     GUIKIT::Image rewindImage;
+    GUIKIT::Image openImage;
+    GUIKIT::Image appendImage;
+    GUIKIT::Image closeImage;
+    GUIKIT::Image clearImage;
 
     unsigned selectedPassId;
     unsigned selectedParamId;
     std::vector<std::pair<unsigned, unsigned>> params;
     ParamEditor* paramEditor = nullptr;
+    SCVideoWindow* scVideoWindow = nullptr;
     	
     auto translate() -> void;
-    auto sliderIdent() -> std::string;
     auto updatePresets(bool reloadDriver, bool reloadPreset) -> void;
     auto updateVisibillity() -> void;
     auto loadSettings(bool init = false) -> void;
@@ -472,8 +491,7 @@ struct PresentationLayout : GUIKIT::HorizontalLayout {
     auto openShaderFileDialog() -> std::string;
     auto presentShaderError() -> void;
     auto clearShaderError() -> void;
-    auto addShaderUI() -> void;
-    auto enableGPUMode(bool state) -> void;
+    auto setShaderVisible(bool state) -> void;
     auto updateScreenText(bool keepFontPath) -> void;
     auto prepareColBox() -> void;
     auto fillFontTypeList() -> void;
@@ -487,6 +505,7 @@ struct PresentationLayout : GUIKIT::HorizontalLayout {
     auto sortFavourites() -> void;
     auto listFavourites() -> void;
     auto copyCustomPresets() -> void;
+    auto setModuls() -> void;
     
     template<typename T> auto setSliderAction( SliderLayout* layout, std::string baseIdent, std::function<T ( unsigned position )> callTransfer = [](unsigned position) { return position; } ) -> void;
     auto vManager() -> VideoManager* { return VideoManager::getInstance(emulator); }

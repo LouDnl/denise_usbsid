@@ -237,6 +237,7 @@ struct View : GUIKIT::Window {
         GUIKIT::MenuItem reset;
         GUIKIT::MenuItem inactive;
     	GUIKIT::MenuItem clearSave;
+        GUIKIT::MenuItem savePath;
     } diskControlMenus[4];
 
     struct {
@@ -365,6 +366,19 @@ struct View : GUIKIT::Window {
         }
     };
 
+    struct SavePathWindow : GUIKIT::Window {
+
+        struct MainLayout : GUIKIT::HorizontalLayout {
+            GUIKIT::LineEdit edit;
+            GUIKIT::Widget spacer;
+            GUIKIT::Button defaultPath;
+            GUIKIT::Button savePath;
+
+            MainLayout();
+        } mainLayout;
+
+    } *savePathWindow = nullptr;
+
     FpsWindow* fpsCustomWindow = nullptr;
     FpsWindow* fpsFastforwardWindow = nullptr;
             	
@@ -385,6 +399,9 @@ struct View : GUIKIT::Window {
     auto updateFPSMenu() -> void;
     auto buildFpsWindow() -> void;
     static auto getReadable(DebuggerTheme theme, Emulator::Interface* emulator = nullptr) -> std::string;
+    auto couldDeviceBlockSecondMouseButton( ) -> bool;
+    auto isAnalogDeviceConnected( ) -> bool;
+    auto toggleRecord() -> void;
     
     View();
 };

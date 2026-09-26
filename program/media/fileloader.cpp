@@ -88,7 +88,7 @@ auto Fileloader::load(Emulator::Interface* emulator, Emulator::Interface::Media*
 
     fileDialogPtr->setTitle( transSelect );
 
-    fileDialogPtr->setPath( preselectPath( settings, group->name, group->isDrive() && (media->id > 0) ) );
+    fileDialogPtr->setPath( preselectPath( settings, group->name ) );
 
     fileDialogPtr->setFilters({ GUIKIT::BrowserWindow::transformFilter(transImage, suffix ),
                                 trans->get("all_files")});
@@ -689,14 +689,6 @@ auto Fileloader::previewFile( std::string filePath, Emulator::Interface* emulato
     return {};
 }
 
-auto Fileloader::eject(Emulator::Interface* emulator, Emulator::Interface::MediaGroup* mediaGroup, bool secondaryOnly) -> void {
-
-    for( auto& media : mediaGroup->media ) {
-        if (!secondaryOnly || media.secondary)
-            eject( emulator, &media);
-    }
-}
-
 auto Fileloader::eject(Emulator::Interface* emulator, Emulator::Interface::Media* media) -> void {
 
     if ( !media->group->isExpansion() ) {
@@ -741,12 +733,8 @@ auto Fileloader::insertFile( Emulator::Interface* emulator, Emulator::Interface:
     auto folderPath = GUIKIT::File::buildRelativePath(file->getPath());
     settings->set<std::string>(_underscoreEx(media->group->name) + "_folder_auto", folderPath);
 
-    if (!file->exists()) {
-        FileHelper::errorFileSize(MAX_MEDIUM_SIZE, file->getPath(), emuView ? emuView->message : view->message);
-        return false;
-    }
-    if (!media->group->isHardDisk() && !file->isSizeValid(MAX_MEDIUM_SIZE)) {
-        FileHelper::errorFileSize(MAX_MEDIUM_SIZE, file->getPath(), emuView ? emuView->message : view->message);
+    if (!file->exists() || !file->getSize()) {
+        FileHelper::errorOpen(file, nullptr, emuView ? emuView->message : view->message);
         return false;
     }
 
@@ -798,11 +786,12 @@ auto Fileloader::autoload(Emulator::Interface* emulator, Emulator::Interface::Me
             emuView->systemLayout->setExpansion( mediaGroup->expansion );
     }
 
+    if (!mediaGroup->isExpansion())
+        MiscHelper::removeExpansion(emulator, true);
+
     program->power( emulator );
 
-    if (!mediaGroup->isExpansion())
-        MiscHelper::removeExpansion();
-    else if (statusHandler && activeEmulator->isExpansionUnsupported())
+    if (statusHandler && mediaGroup->isExpansion() && activeEmulator->isExpansionUnsupported())
         statusHandler->setMessage(trans->getA("unsupported cartridge"), true);
 
     bool forceStandardKernal = false;
@@ -858,9 +847,12 @@ auto Fileloader::autoload(Emulator::Interface* emulator, Emulator::Interface::Me
 
 auto Fileloader::updateFileSetting(FileSetting* fSetting, GUIKIT::File* file, GUIKIT::File::Item* item ) -> void {
     auto path = GUIKIT::File::buildRelativePath(file->getFile());
+    std::string fName = file->getFileName( item );
+    if (file->isArchived())
+        fName = file->getFileName( ) + " - " + fName;
 
     fSetting->setPath(path, !cmd->autoload);
-    fSetting->setFile(item->info.name, !cmd->autoload);
+    fSetting->setFile(fName, !cmd->autoload);
     fSetting->setId(item->id, !cmd->autoload);
 }
 
@@ -878,8 +870,15 @@ auto Fileloader::insertImage(Emulator::Interface* emulator, Emulator::Interface:
 
     auto data = mediaGroup->isHardDisk() && !file->isArchived() ? nullptr : file->archiveData(item->id);
 
-    bool updateGenericFileList = !media->secondary;
-    if (!mediaGroup->isExpansion() || media->secondary) {
+    auto useExpansion = emulator->getExpansion();
+
+    auto insertedExpansion = emulator == activeEmulator && useExpansion && useExpansion->mediaGroup == mediaGroup;
+
+    bool mediaIsRam = media->type == Emulator::Interface::Media::MemoryType::RAM || media->type == Emulator::Interface::Media::MemoryType::SRAM;
+
+    bool updateGenericFileList = !media->parent && (mediaGroup->isProgram() || !mediaIsRam);
+
+    if (!mediaGroup->isExpansion() || (insertedExpansion && (mediaIsRam || (media->parent && (mediaGroup->selected == media->parent))))) {
         emulator->ejectMedium(media);
         updateFileSetting(fSetting, file, item);
         media->guid = uintptr_t(file);
@@ -891,6 +890,8 @@ auto Fileloader::insertImage(Emulator::Interface* emulator, Emulator::Interface:
 
         if (mediaGroup->isHardDisk() && mediaGroup->expansion->pcbs.size())
             settings->set<unsigned>(_underscore(media->name) + "_pcb", 0);
+
+        States::getInstance(emulator)->updateImage(fSetting, media);
     } else {
         auto ext = GUIKIT::String::getExtension(file->getFile(), "bin");
         GUIKIT::String::toLowerCase(ext);
@@ -901,10 +902,16 @@ auto Fileloader::insertImage(Emulator::Interface* emulator, Emulator::Interface:
             settings->set<unsigned>( _underscore(media->name) + "_pcb", 0);
 
         updateFileSetting(fSetting, file, item);
+
+        States::getInstance(emulator)->forcePowerNextLoad = true;
     }
 
     auto recentFile = getRecentFile(emulator);
-    recentFile->add(mediaGroup, media->secondary, GUIKIT::File::buildRelativePath(file->getFile()), updateGenericFileList);
+
+    if (!cmd->autoload) {
+        RecentFiles::FileIdent fI{GUIKIT::File::buildRelativePath(file->getFile()), fSetting->file, item->id};
+        recentFile->add(mediaGroup, media->parent != nullptr, fI, updateGenericFileList);
+    }
     if (view)
         view->updateRecentList(emulator);
 
@@ -913,7 +920,7 @@ auto Fileloader::insertImage(Emulator::Interface* emulator, Emulator::Interface:
     if (!fromState && view && activeEmulator && mediaGroup->isTape())
         view->updateTapeIcons();
 
-    if (!dontUpdateSelected && mediaGroup->selected && !media->secondary ) {
+    if (!dontUpdateSelected && mediaGroup->selected && !media->parent ) {
         mediaGroup->selected = media;
         settings->set<unsigned>(_underscore(mediaGroup->name) + "_selected", media->id);
     }
@@ -924,11 +931,6 @@ auto Fileloader::insertImage(Emulator::Interface* emulator, Emulator::Interface:
     filePool->unloadOrphaned();
 
     if (!cmd->noGui) {
-        if (!mediaGroup->isExpansion())
-            States::getInstance(emulator)->updateImage(fSetting, media);
-        else
-            States::getInstance(emulator)->forcePowerNextLoad = true;
-
         if (!fromState && mediaGroup->isDrive() && fSetting)
             FileHelper::updateSaveIdent( emulator, fSetting );
     }
@@ -1004,25 +1006,10 @@ auto Fileloader::insertCurrentPreview(Emulator::Interface::MediaGroup* mediaGrou
     }
 }
 
-auto Fileloader::preselectPath( GUIKIT::Settings* settings, std::string& groupName, bool lastPathFirst ) -> std::string {
-    std::string baseFolderIdent = _underscoreEx(groupName) + "_folder";
-    std::string path;
-
-    for(int i = 0; i < 2; i++) {
-        std::string useIdent = baseFolderIdent;
-        if (lastPathFirst)
-            useIdent += "_auto";
-
-        lastPathFirst ^= 1;
-
-        path = settings->get<std::string>( useIdent, "" );
-        path = GUIKIT::File::resolveRelativePath(path);
-
-        if ( !path.empty() )
-            break;
-    }
-
-    return path;
+auto Fileloader::preselectPath( GUIKIT::Settings* settings, std::string& groupName ) -> std::string {
+    std::string baseFolderIdent = _underscoreEx(groupName) + "_folder_auto";
+    auto path = settings->get<std::string>( baseFolderIdent, "" );
+    return GUIKIT::File::resolveRelativePath(path);
 }
 
 auto Fileloader::loadSettings(Emulator::Interface* emulator) -> void {
@@ -1132,9 +1119,7 @@ auto Fileloader::insertSwapDisk(Emulator::Interface* emulator, unsigned swapPos)
     item.id = fSetting->id;
     item.info.name = fSetting->file;
 
-    if (!file || !file->exists() || !file->isSizeValid(MAX_MEDIUM_SIZE) ||
-        (file->archiveData(fSetting->id) == nullptr)
-            ) {
+    if (!file || !file->exists() || !file->getSize() || (file->archiveData(fSetting->id) == nullptr)) {
         statusHandler->setMessage(trans->get("file_open_error", {{ "%path%", fSetting->file }}), true);
         return nullptr;
     }

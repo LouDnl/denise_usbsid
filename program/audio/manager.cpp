@@ -9,6 +9,9 @@
 #include "../view/view.h"
 #include "../tools/chronos.h"
 #include "../helper/settingsHelper.h"
+#include "../emuconfig/layouts/audio.h"
+#include "../config/config.h"
+#include "../config/layouts/drivers.h"
 
 AudioManager* audioManager = nullptr;
 
@@ -159,6 +162,24 @@ auto AudioManager::setVolume() -> void {
     
     if (!mute)
         volumeAdjust = ( (float)volume * 0.01 ) / 32768.0;
+}
+
+auto AudioManager::setInterference() -> void {
+    if (!activeEmulator)
+        return;
+
+    LumaInterference& ali = lumaInterference;
+    ali.enabled = false;
+    if (dynamic_cast<LIBC64::Interface*>(activeEmulator)) {
+        auto settings = Program::getSettings(activeEmulator);
+        ali.enabled = settings->get<bool>("video_audio_interference", false);
+    }
+
+    ali.lines = 0;
+    ali.linePos = 0;
+    ali.lineDiff = 0;
+    ali.noiseDiff = 0;
+    ali.noisePos = 0;
 }
 
 auto AudioManager::setTapeNoise( ) -> void {
@@ -325,6 +346,7 @@ auto AudioManager::power() -> void {
     setBufferSize();
     setAudioDsp();
     setVolume();
+    setInterference();
     setDriveSounds();
     setTapeNoise();
 
@@ -415,6 +437,9 @@ auto AudioManager::flush( ) -> void {
 
     bufferPos = 0;
 
+    if (lumaInterference.enabled)
+        applyInterference();
+
     if (dynamicRateControl || statistics.enable) {
         double deviation = audioDriver->getCenterBufferDeviation();
 
@@ -458,6 +483,49 @@ auto AudioManager::flush( ) -> void {
         checkIfUINeedsAnUpdate();
 }
 
+auto AudioManager::applyInterference() -> void {
+    LumaInterference& ali = lumaInterference;
+    float sample;
+
+    static constexpr float whiteNoise[] = {
+        2.0f, 1.0f, 2.0f, 1.0f,
+        2.0f, 3.0f, 1.0f, 2.0f,
+        1.0f, 2.0f, 2.0f, 1.0f,
+        3.0f, 2.0f, 1.0f, 2.0f,
+        2.0f, 1.0f, 3.0f, 1.0f,
+        2.0f, 2.0f, 1.0f, 2.0f,
+        1.0f, 3.0f, 2.0f, 1.0f,
+        2.0f, 1.0f, 2.0f, 3.0f
+    };
+
+    if (ali.lines) {
+        auto _noiseFreq = static_cast<unsigned>((float) stat.cyclesPerLine * 0.19f);
+
+        for (unsigned s = 0; s < bufferSize; s++) {
+            sample = buffer[s];
+
+            sample += (ali.avgLines[ali.linePos] * 1.0f) * volumeAdjust;
+            sample += ((whiteNoise[ali.noisePos] * ali.avgFrame * 0.6f) ) * volumeAdjust;
+
+            ali.lineDiff += static_cast<unsigned>(stat.sampleIntervall);
+            if (ali.lineDiff >= stat.cyclesPerLine  ) {
+                ali.lineDiff -= stat.cyclesPerLine  ;
+                if (++ali.linePos >= ali.lines)
+                    ali.linePos = 0;
+            }
+
+            ali.noiseDiff += stat.sampleIntervall;
+            if (ali.noiseDiff >= _noiseFreq) {
+                ali.noiseDiff -= _noiseFreq;
+                if (++ali.noisePos >= std::size( whiteNoise ))
+                    ali.noisePos = 0;
+            }
+
+            buffer[s] = sample;
+        }
+    }
+}
+
 auto AudioManager::calcStatistics( float adjust ) -> void {
     
     statistics.sum += adjust;
@@ -484,4 +552,53 @@ auto AudioManager::checkIfUINeedsAnUpdate() -> void {
         activeEmulator->requestImmediateReturn();
         measureUiUpdate.lastTS = ts;
     }
+}
+
+auto AudioManager::initDriver() -> void {
+    if (audioDriver)
+        delete audioDriver;
+
+    if (cmd->noDriver) {
+        audioDriver = new DRIVER::Audio;
+        return;
+    }
+
+    audioDriver = DRIVER::Audio::create( getSelectedDriver() );
+    audioManager->setFrequency();
+    audioManager->setLatency();
+    audioManager->setSynchronize();
+    audioManager->setRateControl();
+
+    if ( !audioDriver->init( view->handle() ) ) {
+        delete audioDriver;
+        audioDriver = new DRIVER::Audio;
+    }
+    // driver initialization could use different frequency than user requested
+    audioManager->setResampler();
+    audioManager->resetDriveSounds();
+    audioManager->setAudioDsp();
+
+    if (configView)
+        configView->driversLayout->updateLatencySlider();
+}
+
+auto AudioManager::getSelectedDriver() -> std::string {
+    auto curDriver = globalSettings->get<std::string>("audio_driver", "");
+    auto drivers = DRIVER::Audio::available();
+
+    for(auto& driver : drivers) {
+        if(curDriver == driver) return driver;
+    }
+    return DRIVER::Audio::preferred();
+}
+
+auto AudioManager::mixDriveSound( Emulator::Interface::Media* media, Emulator::Interface::DriveSound driveSound, bool alternate, uint8_t data ) -> void {
+    auto& stats = activeEmulator->getStatsForSelectedRegion();
+
+    if (stats.sampleIntervall > 2) {
+        if ( (stats.sampleIntervall * bufferPos) > (256 << (uint8_t)stats.stereoSound) )
+            flush();
+    }
+
+    drive.addSound( activeEmulator, media, (Mixer::Drive::DriveSound)driveSound, alternate, data );
 }
