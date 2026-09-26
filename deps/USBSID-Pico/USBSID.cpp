@@ -4,19 +4,21 @@
  * computer, phone or ASID supporting player.
  *
  * USBSID.cpp
- * This file is part of USBSID-Pico (https://github.com/LouDnl/USBSID-Pico-driver)
+ * This file is part of USBSID-Pico-driver (https://github.com/LouDnl/USBSID-Pico-driver)
  * File author: LouD
  *
- * Copyright (c) 2024-2026 LouD
+ * USBSID-Pico-driver
+ * Copyright (C) 2024-2026  LouD
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 2.
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
@@ -25,15 +27,13 @@
 
 #include <libusb.h>
 #include <time.h>
+#include <algorithm>
 #include "USBSID.h"
 
 
 using namespace USBSID_NS;
 using namespace std;
 
-#ifndef count_of
-#define count_of(a) (sizeof(a)/sizeof(uint8_t))
-#endif
 
 static inline uint8_t* us_alloc(size_t alignment, size_t size)
 {
@@ -61,20 +61,33 @@ static inline void us_free(void* m)
 #endif
 }
 
-/* Driver related */
-bool USBSID_Class::us_Initialised = false;
-bool USBSID_Class::us_Available = false;
-bool USBSID_Class::us_PortIsOpen = false;
+/**
+ * @brief: Read the USB port path of a device.
+ *
+ * @param dev: libusb device
+ * @return: port numbers from root hub to device, empty on failure
+ */
+static std::vector<uint8_t> us_port_path(libusb_device *dev)
+{
+  std::vector<uint8_t> path;
+  uint8_t p[8];
+  int n = libusb_get_port_numbers(dev, p, sizeof(p));
+  if (n > 0) path.assign(p, p + n);
+  return path;
+}
 
-/* Timing related */
-double USBSID_Class::us_CPUcycleDuration               = ratio_t::den / (float)cycles_per_sec;  /* CPU cycle duration in nanoseconds */
-double USBSID_Class::us_InvCPUcycleDurationNanoSeconds = 1.0 / (ratio_t::den / (float)cycles_per_sec);  /* Inverted CPU cycle duration in nanoseconds */
-timestamp_t USBSID_Class::m_StartTime                  = std::chrono::steady_clock::now();  /* That moment when... */
-timestamp_t USBSID_Class::m_LastTime                   = m_StartTime;  /* I know what you did last summer! */
+/**
+ * @brief: Order devices by bus, then port path.
+ *
+ * @return: true if a sorts before b
+ */
+static bool us_port_less(uint8_t bus_a, const std::vector<uint8_t> &path_a,
+                         uint8_t bus_b, const std::vector<uint8_t> &path_b)
+{
+  if (bus_a != bus_b) return bus_a < bus_b;
+  return path_a < path_b;
+}
 
-/* Ringbuffer related */
-int USBSID_Class::diff_size = 64;
-int USBSID_Class::ring_size = 8192;
 
 extern "C" {
 
@@ -84,20 +97,23 @@ USBSID_Class::USBSID_Class() :
   us_InstanceID(0)//,
 {
   USBDBG(stdout, "[USBSID] Driver init start\n");
-  us_InstanceID = ++instance;  /* Current object id */
-  if (us_PortIsOpen && (us_InstanceID == 1)) USBSID_GetNumSIDs();  /* Retrieve numsids on 2nd class init when port is open */
+  us_InstanceID = ++instance_counter;
+  us_CPUcycleDuration = ratio_t::den / (float)cycles_per_sec;
+  us_InvCPUcycleDurationNanoSeconds = 1.0 / (ratio_t::den / (float)cycles_per_sec);
+  m_StartTime = std::chrono::steady_clock::now();
+  m_LastTime = m_StartTime;
   us_Initialised = true;
 }
 
 USBSID_Class::~USBSID_Class()
 {
   USBDBG(stdout, "[USBSID] Driver de-init start\n");
-  instance--;
-  if (us_PortIsOpen && (instance <= 0)) {
+  if (us_PortIsOpen) {
     if (USBSID_Close() == 0) {
       us_Initialised = false;
     }
   }
+  USBSID_DeInitRingBuffer(); /* no-op after Close(), frees a ring left by a failed thread start */
   if (write_buffer) us_free(write_buffer);
   if (thread_buffer) us_free(thread_buffer);
   if (result) us_free(result);
@@ -196,6 +212,18 @@ void USBSID_Class::USBSID_UnMute(void)
   return;
 }
 
+void USBSID_Class::USBSID_SetMuted(bool muted)
+{ /* Argument 1 in the MUTE/UNMUTE command sets the firmware's muted state, which
+   * masks every later volume register write until unmuted.
+   * USBSID_Mute() sends
+   * 0 and only zeroes the volume once, the next volume write is audible again. */
+  if (!us_PortIsOpen) return;
+  USBDBG(stdout, "[USBSID] SetMuted %d\r\n", muted);
+  unsigned char buff[3] = {(unsigned char)(COMMAND << 6 | (muted ? MUTE : UNMUTE)), 0x1, 0x0};
+  USBSID_SingleWrite(buff, 3);
+  return;
+}
+
 void USBSID_Class::USBSID_DisableSID(void)
 {
   if (!us_PortIsOpen) return;
@@ -226,7 +254,7 @@ void USBSID_Class::USBSID_ClearBus(void)
 void USBSID_Class::USBSID_SetClockRate(long clockrate_cycles, bool suspend_sids)
 {
   if (!us_PortIsOpen) return;
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < (sizeof(clockSpeed) / sizeof(clockSpeed[0])); i++) {
     if (clockSpeed[i] == clockrate_cycles) {
       cycles_per_sec = clockSpeed[i];
       cycles_per_frame = refreshRate[i];
@@ -237,9 +265,15 @@ void USBSID_Class::USBSID_SetClockRate(long clockrate_cycles, bool suspend_sids)
       USBDBG(stdout, "[USBSID] Cycles per raster %ld\n", cycles_per_raster);
       USBDBG(stdout, "[USBSID] Cycles per frame: %ld\n", cycles_per_frame);
       USBDBG(stdout, "[USBSID] CPU cycle duration in nanoseconds %f\n", us_CPUcycleDuration);
-      USBDBG(stdout, "[USBSID] Inverted CPU cycle duration in nanoseconds %.09f\n", us_InvCPUcycleDurationNanoSeconds);
+      USBDBG(stdout, "[USBSID] Inverted CPU cycle duration in nanoseconds %.09f\n",
+        us_InvCPUcycleDurationNanoSeconds);
       if (clk_retrieved == 0 || us_clkrate != cycles_per_sec) {
-        uint8_t configbuff[6] = {(COMMAND << 6 | CONFIG), 0x50, i, (uint8_t)(suspend_sids == true ? 1 : 0), 0, 0};
+        uint8_t configbuff[6] = {
+          (COMMAND << 6 | CONFIG),
+          0x50,
+          i,
+          (uint8_t)(suspend_sids == true ? 1 : 0),
+          0, 0};
         USBSID_SingleWrite(configbuff, 6);
       }
       USBSID_SyncTime();
@@ -469,7 +503,8 @@ void USBSID_Class::USBSID_SingleWrite(unsigned char *buff, size_t len)
   if (!us_PortIsOpen) return;
   int actual_length = 0;
   if (libusb_bulk_transfer(devh, EP_OUT_ADDR, buff, len, &actual_length, LIBUSB_TIMEOUT) < 0) {
-    USBERR(stderr, "[USBSID] Error while sending synchronous write buffer of length %d\n", actual_length);
+    USBERR(stderr, "[USBSID] Error while sending synchronous write buffer of length %d\n",
+      actual_length);
   }
   transfer_out_pending = false;
   return;
@@ -490,7 +525,7 @@ unsigned char USBSID_Class::USBSID_SingleRead(uint8_t reg)
     return 0;
   } else if (rc < 0) {
     USBERR(stderr, "[USBSID] Error while waiting for char while reading: %d, %s: %s\n",
-      rc, libusb_error_name(rc), libusb_strerror(rc));
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     return 0;
   }
   return result[0];
@@ -507,7 +542,7 @@ unsigned char USBSID_Class::USBSID_SingleReadConfig(unsigned char *buff, size_t 
     return 0;
   } else if (rc < 0) {
     USBERR(stderr, "[USBSID] Error while waiting for char while reading: %d, %s: %s\n",
-      rc, libusb_error_name(rc), libusb_strerror(rc));
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     return 0;
   }
   return *buff;
@@ -524,7 +559,7 @@ int USBSID_Class::USBSID_ReadConfig(unsigned char *buff, size_t len)
     return 0;
   } else if (rc < 0) {
     USBERR(stderr, "[USBSID] Error while waiting for char while reading: %d, %s: %s\n",
-      rc, libusb_error_name(rc), libusb_strerror(rc));
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     return 0;
   }
   return actual_length;
@@ -537,7 +572,8 @@ void USBSID_Class::USBSID_Write(unsigned char *buff, size_t len)
 {
   if (!us_PortIsOpen) return;
   if (threaded) {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
     return;
   }
   write_completed = 0;
@@ -551,7 +587,8 @@ void USBSID_Class::USBSID_Write(uint8_t reg, uint8_t val)
 {
   if (!us_PortIsOpen) return;
   if (threaded) {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
     return;
   }
   write_completed = 0;
@@ -566,7 +603,8 @@ void USBSID_Class::USBSID_Write(unsigned char *buff, size_t len, uint16_t cycles
 {
   if (!us_PortIsOpen) return;
   if (threaded) {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
     return;
   }
   USBSID_WaitForCycle(cycles);
@@ -581,7 +619,8 @@ void USBSID_Class::USBSID_Write(uint8_t reg, uint8_t val, uint16_t cycles)
 {
   if (!us_PortIsOpen) return;
   if (threaded) {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
     return;
   }
   USBSID_WaitForCycle(cycles);
@@ -597,7 +636,8 @@ void USBSID_Class::USBSID_WriteCycled(uint8_t reg, uint8_t val, uint16_t cycles)
 {
   if (!us_PortIsOpen) return;
   if (threaded) {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
     return;
   }
   write_completed = 0;
@@ -626,7 +666,7 @@ unsigned char USBSID_Class::USBSID_Read(uint8_t reg)
     if (rc < 0) {
       transfer_in_pending = false;
       USBERR(stderr, "[USBSID] submit IN failed %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       return 0xFF;
     }
     /* now out buffer */
@@ -637,7 +677,7 @@ unsigned char USBSID_Class::USBSID_Read(uint8_t reg)
       transfer_out_pending = false;
       libusb_cancel_transfer(transfer_in);
       USBERR(stderr, "[USBSID] submit OUT failed %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       return 0xFF;
     }
     while (!read_completed && transfer_in_pending) {
@@ -647,7 +687,8 @@ unsigned char USBSID_Class::USBSID_Read(uint8_t reg)
 
     return *result;
   } else {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
   }
   return 0xFF;
 }
@@ -665,7 +706,7 @@ unsigned char USBSID_Class::USBSID_Read(unsigned char *writebuff)
     if (rc < 0) {
       transfer_in_pending = false;
       USBERR(stderr, "[USBSID] submit IN failed %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       return 0xFF;
     }
     /* now out buffer */
@@ -677,7 +718,7 @@ unsigned char USBSID_Class::USBSID_Read(unsigned char *writebuff)
       transfer_out_pending = false;
       libusb_cancel_transfer(transfer_in);
       USBERR(stderr, "[USBSID] submit OUT failed %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       return 0xFF;
     }
     while (!read_completed && transfer_in_pending) {
@@ -686,7 +727,8 @@ unsigned char USBSID_Class::USBSID_Read(unsigned char *writebuff)
     }
     return *result;
   } else {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
   }
   return 0xFF;
 }
@@ -705,7 +747,7 @@ unsigned char USBSID_Class::USBSID_Read(unsigned char *writebuff, uint16_t cycle
     if (rc < 0) {
       transfer_in_pending = false;
       USBERR(stderr, "[USBSID] submit IN failed %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       return 0xFF;
     }
     /* now out buffer */
@@ -717,7 +759,7 @@ unsigned char USBSID_Class::USBSID_Read(unsigned char *writebuff, uint16_t cycle
       transfer_out_pending = false;
       libusb_cancel_transfer(transfer_in);
       USBERR(stderr, "[USBSID] submit OUT failed %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       return 0xFF;
     }
     while (!read_completed && transfer_in_pending) {
@@ -726,7 +768,8 @@ unsigned char USBSID_Class::USBSID_Read(unsigned char *writebuff, uint16_t cycle
     }
     return *result;
   } else {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n", __func__, threaded);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded (%d) is enabled\n",
+      __func__, threaded);
   }
   return 0xFF;
 }
@@ -750,13 +793,35 @@ void* USBSID_Class::USBSID_Thread(void)
     if (flush_buffer == 1) {
       USBSID_FlushBuffer();
     }
-    while ((us_ringbuffer.ring_read != us_ringbuffer.ring_write)
+    while ((run_thread == 1)
+           && (us_ringbuffer.ring_read != us_ringbuffer.ring_write)
            && (USBSID_RingDiff() > diff_size)) {
       if (withcycles) {
         USBSID_RingPopCycled();
       } else {
         USBSID_RingPop();
       }
+    }
+    /* CPU + latency fix built around RingPut.
+     * Any call to RingPut is now done inside us_mutex and signals us_cond
+     * just before unlocking the mutex which wakes up this thread when new
+     * data is put into the ring instead of constantly polling the ringbuffer
+     * and causing cpu->thread hike with multiple boards connected.
+     * The timeout is just a safety net incase of a missed wakeup and not
+     * the real wake mechanism, so its exact value is not latency-critical.
+     * USBSID_SendThreadBuffer() releases us_mutex during USB I/O, a
+     * producer never waits on a transfer. */
+    if (run_thread == 1
+        && !((us_ringbuffer.ring_read != us_ringbuffer.ring_write)
+             && (USBSID_RingDiff() > diff_size))) {
+      struct timespec ts;
+      clock_gettime(CLOCK_REALTIME, &ts);
+      ts.tv_nsec += 2000000L; /* 2ms safety-net timeout */
+      if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_nsec -= 1000000000L;
+        ts.tv_sec += 1;
+      }
+      pthread_cond_timedwait(&us_cond, &us_mutex, &ts);
     }
   }
   USBDBG(stdout, "[USBSID] Thread finished\r\n");
@@ -778,7 +843,7 @@ int USBSID_Class::USBSID_InitThread(void)
   us_thread++;
   pthread_mutex_unlock(&us_mutex);
   int error;
-  error = pthread_create(&this->us_ptid, NULL, &this->_USBSID_Thread, NULL);
+  error = pthread_create(&this->us_ptid, NULL, &this->_USBSID_Thread, this);
   if (error != 0) {
     USBERR(stderr, "[USBSID] Thread can't be created :[%s]\n", strerror(error));
   }
@@ -790,11 +855,14 @@ void USBSID_Class::USBSID_StopThread(void)
   USBDBG(stdout, "[USBSID] Stop thread\r\n");
   if (USBSID_IsRunning() == 1) {
     USBDBG(stdout, "[USBSID] Set thread exit = 1\r\n");
+    pthread_mutex_lock(&us_mutex);
     run_thread = flush_buffer = 0;
-    USBSID_DeInitRingBuffer();
+    pthread_cond_signal(&us_cond);
+    pthread_mutex_unlock(&us_mutex);
     pthread_join(us_ptid, NULL);
     USBDBG(stdout, "[USBSID] Thread attached\r\n");
     threaded = withcycles = false;
+    USBSID_DeInitRingBuffer(); /* after the join, the thread reads the ring until it exits */
     while (us_thread > 0) {};
     pthread_mutex_destroy(&us_mutex);
   }
@@ -887,7 +955,9 @@ void USBSID_Class::USBSID_InitRingBuffer(int buffer_size, int differ_size)
   USBSID_SetBufferSize(buffer_size);
   USBSID_SetDiffSize(differ_size);
   USBSID_ResetRingBuffer();
+  if (us_ringbuffer.is_allocated == 1) us_free(us_ringbuffer.ringbuffer); /* no leak on re-init */
   us_ringbuffer.ringbuffer = us_alloc(2 * ring_size, (sizeof(uint8_t)) * ring_size);
+  us_ringbuffer.is_allocated = (us_ringbuffer.ringbuffer != NULL) ? 1 : 0;
   USBDBG(stdout, "[USBSID] Init RingBuffer with size: %d and diffsize: %d\n",
      buffer_size, differ_size);
   return;
@@ -898,8 +968,9 @@ void USBSID_Class::USBSID_InitRingBuffer(void)
   USBSID_SetBufferSize(ring_size);
   USBSID_SetDiffSize(diff_size);
   USBSID_ResetRingBuffer();
+  if (us_ringbuffer.is_allocated == 1) us_free(us_ringbuffer.ringbuffer); /* no leak on re-init */
   us_ringbuffer.ringbuffer = us_alloc(2 * ring_size, (sizeof(uint8_t)) * ring_size);
-  us_ringbuffer.is_allocated = 1;
+  us_ringbuffer.is_allocated = (us_ringbuffer.ringbuffer != NULL) ? 1 : 0;
   USBDBG(stdout, "[USBSID] Init RingBuffer with default size: %d and default diffsize: %d\n",
      ring_size, diff_size);
   return;
@@ -911,15 +982,34 @@ void USBSID_Class::USBSID_DeInitRingBuffer(void)
   USBSID_SetBufferSize(default_ring_size);
   USBSID_SetDiffSize(default_diff_size);
   if (us_ringbuffer.is_allocated == 1) us_free(us_ringbuffer.ringbuffer);
+  us_ringbuffer.ringbuffer = NULL; /* a second call must not free again */
+  us_ringbuffer.is_allocated = 0;
   return;
 }
 
 void USBSID_Class::USBSID_RestartRingBuffer(void)
 { /* This function can be deprecated in favour of using deinit and init */
   if (!us_PortIsOpen) return;
+  /* Store diff and ring size for fun and profit lol */
+  int temp_diff_size = diff_size;
+  int temp_ring_size = ring_size;
   USBSID_DeInitRingBuffer();
+  /* Reassigned previous sizes */
+  diff_size = temp_diff_size;
+  ring_size = temp_ring_size;
   USBSID_InitRingBuffer();
   return;
+}
+
+int USBSID_Class::USBSID_RingFree(void)
+{ /* The ringbuffer has no overflow protection, a producer that writes faster
+   * than the thread sends overwrites unsent data. This lets the caller apply
+   * backpressure. Read without the lock, so an estimate. One slot always stays
+   * unused to tell a full ring from an empty one. */
+  if (us_ringbuffer.is_allocated != 1) return 0;
+  const int r = us_ringbuffer.ring_read;
+  const int w = us_ringbuffer.ring_write;
+  return ring_size - 1 - ((w - r + ring_size) % ring_size);
 }
 
 bool USBSID_Class::USBSID_IsHigher()
@@ -929,7 +1019,9 @@ bool USBSID_Class::USBSID_IsHigher()
 
 int USBSID_Class::USBSID_RingDiff()
 {
-  int d = (USBSID_IsHigher() ? (us_ringbuffer.ring_read - us_ringbuffer.ring_write) : (us_ringbuffer.ring_write - us_ringbuffer.ring_read));
+  int d = (USBSID_IsHigher()
+    ? (us_ringbuffer.ring_read - us_ringbuffer.ring_write)
+    : (us_ringbuffer.ring_write - us_ringbuffer.ring_read));
   return ((d < 0) ? (d * -1) : d);
 }
 
@@ -948,17 +1040,19 @@ uint8_t USBSID_Class::USBSID_RingGet()
 }
 
 void USBSID_Class::USBSID_Flush(void)
-{
+{ /* Signal only, USBSID_FlushBuffer() runs on the driver thread */
   if (!us_PortIsOpen) return;
   USBSID_SetFlush();
-  USBSID_FlushBuffer();
   return;
 }
 
 void USBSID_Class::USBSID_SetFlush(void)
 {
   USBSID_SyncTime();
+  pthread_mutex_lock(&us_mutex);
   flush_buffer = 1;
+  pthread_cond_signal(&us_cond);
+  pthread_mutex_unlock(&us_mutex);
   return;
 }
 
@@ -975,25 +1069,10 @@ void USBSID_Class::USBSID_FlushBuffer(void)
   /* The flush is a deadline, so whatever is still waiting in the ring belongs
    * in this packet.
    *
-   * Without this the ring is only ever drained by USBSID_Thread(), which stops
-   * while fewer than diff_size bytes are waiting, and a packet only goes out
-   * once it reaches 61 bytes on withcycles. A write therefore waits behind up to
-   * 15 + (diff_size / 4) writes, and what that costs is a time that moves with
-   * how fast the caller happens to be writing: about 2 ms during a volume
-   * register digi at ten thousand writes a second, and a quarter of a second
-   * once the sample ends and an ordinary tune writes its registers once a
-   * frame. Ghostbusters.sid is both in turn, and the notes after its speech
-   * arrived up to 229 ms late. No value of diff_size fixes that, because the
-   * 15 writes sitting in the packet are not diff_size's to give back.
-   *
-   * The fill is worked out here rather than with USBSID_RingDiff(), which
-   * returns the free space instead of the fill once ring_read has passed
-   * ring_write.
-   *
-   * The loop always consumes a whole record or exits, so it cannot spin. The
-   * thread's own drain loop and diff_size are deliberately left alone: leaving
-   * that loop is the only thing that reaches libusb_handle_events(), and a
-   * drain condition that cannot be satisfied hangs playback outright. */
+   * this drains whatever is waiting in the ring on a flush deadline instead
+   * of leaving it to the thread's own diff_size-gated drain loop, which
+   * otherwise leaves writes sitting in the ring far longer than their caller
+   * intended. */
   const int rec = (withcycles == 1) ? 4 : 2;
   const int cap = (withcycles == 1) ? 61 : 63;
   int waiting = (us_ringbuffer.ring_write - us_ringbuffer.ring_read
@@ -1011,13 +1090,8 @@ void USBSID_Class::USBSID_FlushBuffer(void)
     thread_buffer[0] = (withcycles == 1)
       ? (uint8_t)(CYCLED_WRITE << 6 | (buffer_pos - 1))
       : (uint8_t)(WRITE << 6 | (buffer_pos - 1));
-    memcpy(out_buffer, thread_buffer, buffer_pos);
-    buffer_pos = 1;
     flush_buffer = 0;
-    libusb_submit_transfer(transfer_out);
-    libusb_handle_events_completed(ctx, NULL);
-    memset(thread_buffer, 0, 64);
-    memset(out_buffer, 0, len_out_buffer);
+    USBSID_SendThreadBuffer();
   } else {
     flush_buffer = 0;
   }
@@ -1028,10 +1102,14 @@ void USBSID_Class::USBSID_WriteRing(uint8_t reg, uint8_t val)
 {
   if (!us_PortIsOpen) return;
   if (threaded && !withcycles) {
+    pthread_mutex_lock(&us_mutex);
     USBSID_RingPut(reg);
     USBSID_RingPut(val);
+    pthread_cond_signal(&us_cond);
+    pthread_mutex_unlock(&us_mutex);
   } else {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded = %d and withcycles = %d\n", __func__, threaded, withcycles);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded = %d and withcycles = %d\n",
+      __func__, threaded, withcycles);
   }
   return;
 }
@@ -1040,22 +1118,44 @@ void USBSID_Class::USBSID_WriteRingCycled(uint8_t reg, uint8_t val, uint16_t cyc
 {
   if (!us_PortIsOpen) return;
   if (threaded && withcycles) {
+    pthread_mutex_lock(&us_mutex);
     USBSID_RingPut(reg);
     USBSID_RingPut(val);
     USBSID_RingPut((uint8_t)(cycles >> 8) & 0xFF);
     USBSID_RingPut((uint8_t)(cycles & 0xFF));
+    pthread_cond_signal(&us_cond);
+    pthread_mutex_unlock(&us_mutex);
   } else {
-    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded = %d and withcycles = %d\n", __func__, threaded, withcycles);
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded = %d and withcycles = %d\n",
+      __func__, threaded, withcycles);
+  }
+  return;
+}
+
+void USBSID_Class::USBSID_WriteRingCycledN(const uint8_t *items, int count)
+{ /* Batch variant of USBSID_WriteRingCycled(). `items` holds `count` writes of
+   * 4 bytes each: reg, val, cycles hi, cycles lo. The driver thread holds
+   * us_mutex while it sends, so one lock per batch keeps a producer from
+   * queueing behind the thread on every single write. */
+  if (!us_PortIsOpen || items == NULL || count <= 0) return;
+  if (threaded && withcycles) {
+    pthread_mutex_lock(&us_mutex);
+    for (int i = 0; i < count * 4; i++) USBSID_RingPut(items[i]);
+    pthread_cond_signal(&us_cond);
+    pthread_mutex_unlock(&us_mutex);
+  } else {
+    USBERR(stderr, "[USBSID] Function '%s' cannot be used when threaded = %d and withcycles = %d\n",
+      __func__, threaded, withcycles);
   }
   return;
 }
 
 void USBSID_Class::USBSID_RingPopCycled(void)
 {
-#ifdef USE_VENDOR_ITF /* This can break play for tunes like Fanta in Space */
-  if (transfer_out_pending)
+  if (transfer_out_pending) {
+    USBSID_WaitTransferOut();
     return;
-#endif
+  }
   thread_buffer[buffer_pos++] = USBSID_RingGet();  /* register */
   thread_buffer[buffer_pos++] = USBSID_RingGet();  /* value */
   thread_buffer[buffer_pos++] = USBSID_RingGet();  /* n cycles high */
@@ -1066,25 +1166,17 @@ void USBSID_Class::USBSID_RingPopCycled(void)
       || flush_buffer == 1) {
     flush_buffer = 0;
     thread_buffer[0] = (uint8_t)((CYCLED_WRITE << 6) | (buffer_pos - 1));
-    memcpy(out_buffer, thread_buffer, buffer_pos);
-    buffer_pos = 1;
-    transfer_out_pending = true;
-    libusb_submit_transfer(transfer_out);
-    libusb_handle_events_completed(ctx, NULL);
-#ifdef USE_VENDOR_ITF /* This can break play for tunes like Fanta in Space */
-    struct timeval tv = {0, 500};  // 0.5 ms
-    libusb_handle_events_timeout_completed(ctx, &tv, NULL);
-#endif
-    memset(thread_buffer, 0, 64);
-    memset(out_buffer, 0, len_out_buffer);
+    USBSID_SendThreadBuffer();
   }
   return;
 }
 
 void USBSID_Class::USBSID_RingPop(void)
 {
-  if (transfer_out_pending)
-        return;
+  if (transfer_out_pending) {
+    USBSID_WaitTransferOut();
+    return;
+  }
   write_completed = 0;
 
   /* Ex: 0xD418 */
@@ -1095,13 +1187,48 @@ void USBSID_Class::USBSID_RingPop(void)
     || flush_buffer == 1) {
     flush_buffer = 0;
     thread_buffer[0] = (uint8_t)((WRITE << 6) | (buffer_pos - 1));
-    memcpy(out_buffer, thread_buffer, buffer_pos);
-    buffer_pos = 1;
-    libusb_submit_transfer(transfer_out);
-    libusb_handle_events_completed(ctx, NULL);
-    memset(thread_buffer, 0, 64);
-    memset(out_buffer, 0, len_out_buffer);
+    USBSID_SendThreadBuffer();
   }
+  return;
+}
+
+void USBSID_Class::USBSID_SendThreadBuffer(void)
+{ /* Driver thread only, us_mutex held on entry and on return. Release
+   * us_mutex during USB I/O, producers only wait on ring access.
+   * thread_buffer and out_buffer are only touched by the driver thread. */
+  const int len = buffer_pos;
+  buffer_pos = 1;
+  pthread_mutex_unlock(&us_mutex);
+  while (transfer_out_pending && run_thread == 1) {  /* Previous packet in flight */
+    struct timeval tv = {0, 500};  // 0.5 ms
+    libusb_handle_events_timeout_completed(ctx, &tv, NULL);
+  }
+  if (!transfer_out_pending && transfer_out != NULL) {  /* NULL after a failed transfer */
+    memset(out_buffer, 0, len_out_buffer);
+    memcpy(out_buffer, thread_buffer, len);
+    transfer_out_pending = true;
+    if (libusb_submit_transfer(transfer_out) < 0) {
+      transfer_out_pending = false;
+    } else {
+      libusb_handle_events_completed(ctx, NULL);
+#ifdef USE_VENDOR_ITF
+      struct timeval tv = {0, 500};  // 0.5 ms
+      libusb_handle_events_timeout_completed(ctx, &tv, NULL);
+#endif
+    }
+  }
+  memset(thread_buffer, 0, 64);
+  pthread_mutex_lock(&us_mutex);
+  return;
+}
+
+void USBSID_Class::USBSID_WaitTransferOut(void)
+{ /* Driver thread only, us_mutex held on entry and on return. Block on
+   * libusb events with us_mutex released instead of spinning. */
+  pthread_mutex_unlock(&us_mutex);
+  struct timeval tv = {0, 500};  // 0.5 ms
+  libusb_handle_events_timeout_completed(ctx, &tv, NULL);
+  pthread_mutex_lock(&us_mutex);
   return;
 }
 
@@ -1111,71 +1238,21 @@ void USBSID_Class::USBSID_RingPop(void)
 void USBSID_Class::USBSID_SyncTime(void)
 {
   if (!us_PortIsOpen) return;
-  m_LastTime = std::chrono::steady_clock::now();// - m_StartTime);
+  m_LastTime = std::chrono::steady_clock::now();
 }
 
-uint_fast64_t USBSID_Class::USBSID_WaitForCycle_(uint_fast16_t cycles)
-{
-  long duration = (long)(cycles * us_CPUcycleDuration);
-  auto duration_ns = duration_t(duration);
-  auto start = std::chrono::steady_clock::now();
-  auto target_time = (m_LastTime + duration_ns);
-
-  auto end = std::chrono::steady_clock::now();
-  do {
-    end = std::chrono::steady_clock::now();
-  } while (end < target_time);
-
-  auto actual_ns = static_cast<long long>(std::chrono::duration_cast<duration_t>(end - start).count());
-
-  /* USBDBG(stdout,"[%d][LT]%ld[END]%ld[DUR]%ld[C]%lu[ACTUAL]%lld\n",
-    us_InstanceID,
-    m_LastTime,end,
-    duration_ns,
-    cycles,
-    actual_ns
-  ); */
-
-  m_LastTime = end;
-  return (uint_fast64_t)actual_ns;
-}
-
-/* WORKS */
 uint_fast64_t USBSID_Class::USBSID_WaitForCycle(uint_fast16_t cycles)
 {
   auto start = std::chrono::steady_clock::now();
   auto duration_ns = duration_t((long)(cycles * us_CPUcycleDuration));
   auto target_time = (start + duration_ns);
 
-  // auto end = std::chrono::steady_clock::now();
-  // do {
-  //   end = std::chrono::steady_clock::now();
-  // } while (end < target_time);
-  // } while (target_time > end);
-
-  // while (target_time >= end) {
-  //   end = std::chrono::steady_clock::now();
-  // }
-
-  // while (target_time > std::chrono::steady_clock::now()) {};
-
   do {
   } while (std::chrono::steady_clock::now() < target_time);
-
-  // for (;;) {
-  //   if (std::chrono::steady_clock::now() < target_time) continue;
-  //   else break;
-  // };
 
   auto end = std::chrono::steady_clock::now();
   auto actual_ns = static_cast<long long>(std::chrono::duration_cast<duration_t>(end - start).count());
 
-  /* USBDBG(stdout,"[%d][DUR]%ld [C]%lu [ACTUAL]%lld\n",
-    us_InstanceID,
-    duration_ns,
-    cycles,
-    actual_ns
-  ); */
   return (uint_fast64_t)actual_ns;
 }
 
@@ -1185,22 +1262,111 @@ uint_fast64_t USBSID_Class::USBSID_WaitForCycle(uint_fast16_t cycles)
 int USBSID_Class::LIBUSB_OpenDevice(void)
 {
   USBDBG(stdout, "[USBSID] Open device\r\n");
-  /* Look for a specific device and open it. */
-  devh = libusb_open_device_with_vid_pid(ctx, VENDOR_ID, PRODUCT_ID);
-  if (!devh) {
-    rc = -1;
-    USBERR(stderr, "[USBSID] Error opening USB device with VID & PID: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+  /* Count the devices in the device list */
+  struct libusb_device **devs;
+  ssize_t cnt = libusb_get_device_list(ctx, &devs);
+  if (cnt < 0) {
+    rc = (int)cnt;
+    USBERR(stderr, "[USBSID] Error listing USB devices: %d %s: %s\r\n",
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     return rc;
   }
+
+  /* Create the target device data */
+  struct libusb_device *target = NULL;
+
+  /* Index candidates, sorted like USBSID_EnumerateDevices() */
+  struct Candidate {
+    struct libusb_device *dev;
+    uint8_t bus;
+    std::vector<uint8_t> path;
+  };
+  std::vector<Candidate> candidates;
+
+  /* Find the target we want by serial and assign the index requested */
+  for (ssize_t i = 0; i < cnt; i++) {
+    struct libusb_device_descriptor desc;
+    if (libusb_get_device_descriptor(devs[i], &desc) < 0) continue;
+    if (desc.idVendor != VENDOR_ID || desc.idProduct != PRODUCT_ID) continue;
+
+    if (!want_serial.empty()) { /* If requested by serial number */
+      /* Reading a serial requires an open handle,
+       * probe each match and close again on a miss. */
+      struct libusb_device_handle *probe = NULL;
+      if (libusb_open(devs[i], &probe) == 0) {
+        /* Read the serialnumber */
+        std::string serial;
+        if (desc.iSerialNumber) {
+          unsigned char sbuf[64] = {0};
+          int slen = libusb_get_string_descriptor_ascii(probe, desc.iSerialNumber, sbuf, sizeof(sbuf) - 1);
+          if (slen > 0) serial.assign((char*)sbuf, slen);
+        }
+        /* Is it the one we wanted? */
+        if (serial == want_serial) {
+          devh = probe;
+          opened_serial = serial;
+          target = devs[i];
+          break; /* Break out of the loop if this is the one we wanted */
+        }
+        /* Close the device if not the one we wanted */
+        libusb_close(probe);
+      }
+    } else { /* If no serial given collect for index selection */
+      candidates.push_back({devs[i], libusb_get_bus_number(devs[i]), us_port_path(devs[i])});
+    }
+  }
+
+  if (want_serial.empty()) {
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
+      return us_port_less(a.bus, a.path, b.bus, b.path);
+    });
+    if (want_index >= 0 && (size_t)want_index < candidates.size()) {
+      target = candidates[want_index].dev;
+    }
+  }
+
+  /* Validation */
+  if (!target) {
+    rc = -1;
+    USBERR(stderr, "[USBSID] Error, no matching USBSID-Pico found (serial='%s' index=%d): %d\r\n",
+      want_serial.empty() ? "<any>" : want_serial.c_str(), want_index, rc);
+    libusb_free_device_list(devs, 1);
+    return rc;
+  }
+
+  /* Validation */
+  if (!devh) {
+    rc = libusb_open(target, &devh);
+    if (rc < 0 || !devh) {
+      USBERR(stderr, "[USBSID] Error opening USB device: %d %s: %s\r\n",
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
+      libusb_free_device_list(devs, 1);
+      return rc;
+    }
+  }
+
+  /* No errors? Then we can clear the device list */
+  libusb_free_device_list(devs, 1);
+
+  /* Assign the serial number if still empty */
+  if (opened_serial.empty()) {
+    struct libusb_device_descriptor desc;
+    if (libusb_get_device_descriptor(libusb_get_device(devh), &desc) == 0 && desc.iSerialNumber) {
+      unsigned char sbuf[64] = {0};
+      int slen = libusb_get_string_descriptor_ascii(devh, desc.iSerialNumber, sbuf, sizeof(sbuf) - 1);
+      if (slen > 0) opened_serial.assign((char*)sbuf, slen);
+    }
+  }
+
   /* On macOS the IOKit CDC driver will reclaim interfaces unless we enable
    * auto-detach, which makes libusb detach/reattach the kernel driver
    * automatically around libusb_claim_interface / libusb_release_interface. */
   rc = libusb_set_auto_detach_kernel_driver(devh, 1);
   if (rc == LIBUSB_ERROR_NOT_SUPPORTED) {
-    /* Not supported on this platform (Windows/older libusb) — ignore */
     rc = 0;
   } else if (rc < 0) {
-    USBERR(stderr, "[USBSID] Error setting auto detach kernel driver: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+    USBERR(stderr, "[USBSID] Error setting auto detach kernel driver: %d %s: %s\r\n",
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
   }
   return rc;
 }
@@ -1208,41 +1374,37 @@ int USBSID_Class::LIBUSB_OpenDevice(void)
 void USBSID_Class::LIBUSB_CloseDevice(void)
 {
   USBDBG(stdout, "[USBSID] Close device\r\n");
-  if (us_InstanceID != 0) return;
   if (devh) {
 #ifdef USE_VENDOR_ITF
     /* e.g. macOS needs Vendor interface 4, others may stay with 0, 1 */
     int start_if = 4;
-    int end_if = 5;
     /* no need to detach again... */
     rc = libusb_release_interface(devh, start_if);
 #else
-    int start_if = 0;
-    int end_if = 2;
+    libusb_release_interface(devh, 0);
+    libusb_release_interface(devh, 1);
 
-    for (int if_num = start_if; if_num < end_if; if_num++) {
-      if (libusb_kernel_driver_active(devh, if_num)) {
-        rc = libusb_detach_kernel_driver(devh, if_num);
-        USBERR(stderr, "[USBSID] Error, in libusb_detach_kernel_driver: %d, %s: %s\n", rc, libusb_error_name(rc), libusb_strerror(rc));
-      }
-      rc = libusb_release_interface(devh, if_num);
+    rc = libusb_attach_kernel_driver(devh, 0);
+    if (rc < 0 && rc != LIBUSB_ERROR_NOT_FOUND) {
+      fprintf(stderr, "Attach error on interface 0: %s\n", libusb_error_name(rc));
     }
 #endif
     libusb_close(devh);
+    devh = NULL;
   }
   return;
 }
 
-int USBSID_Class::LIBUSB_Available(libusb_context *ctx_, uint16_t vendor_id, uint16_t product_id)
+int USBSID_Class::LIBUSB_Available(uint16_t vendor_id, uint16_t product_id)
 {
   struct libusb_device **devs;
   struct libusb_device *dev;
   size_t i = 0;
   int r;
+  int found = 0;
   us_Available = false;
-  us_Found = 0;
 
-  if (libusb_get_device_list(ctx_, &devs) < 0)
+  if (libusb_get_device_list(ctx, &devs) < 0)
     return 0;
 
   while ((dev = devs[i++]) != NULL) {
@@ -1252,23 +1414,25 @@ int USBSID_Class::LIBUSB_Available(libusb_context *ctx_, uint16_t vendor_id, uin
       goto out;
     if (desc.idVendor == vendor_id && desc.idProduct == product_id) {
       us_Available = true;
-      us_Found++;
+      found++;
       continue;
     }
   }
 out:
   libusb_free_device_list(devs, 1);
-  return (us_Available ? us_Found : 0);
+  return (us_Available ? found : 0);
 }
 
 int USBSID_Class::LIBUSB_DetachKernelDriver(void)
 {
   USBDBG(stdout, "[USBSID] Detach kernel driver\r\n");
-  /* As we are dealing with a CDC-ACM device, it's highly probable that
-   * Linux already attached the cdc-acm driver to this device.
-   * We need to detach the drivers from all the USB interfaces. The CDC-ACM
-   * Class defines two interfaces: the Control interface and the
-   * Data interface.
+  /* USBSID-Pico acts as a CDC-ACM device and on Linux it's
+   * highly probable that the OS already attached the cdc-acm
+   * driver the moment it got plugged in.
+   * On device close the drivers need to be detached from all
+   * the USB interfaces to return to previous functionalities.
+   * The CDC-ACM Class defines two interfaces:
+   * the Control interface and the Data interface.
    */
     int start_if, end_if;
     /* macOS needs Vendor interface 4, others can stay with 0, 1 */
@@ -1280,12 +1444,13 @@ int USBSID_Class::LIBUSB_DetachKernelDriver(void)
     end_if = 2;
 #endif
   for (int if_num = start_if; if_num < end_if; if_num++) {
-    if (libusb_kernel_driver_active(devh, if_num)) {
+    if (libusb_kernel_driver_active(devh, if_num) == 1) {
       libusb_detach_kernel_driver(devh, if_num);
     }
     rc = libusb_claim_interface(devh, if_num);
     if (rc < 0) {
-      USBERR(stderr, "[USBSID] Error claiming interface: %d, %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+      USBERR(stderr, "[USBSID] Error claiming interface: %d, %s: %s\r\n",
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
       rc = -1;
       break;
     }
@@ -1305,15 +1470,17 @@ int USBSID_Class::LIBUSB_ConfigureDevice(void)
    * set line state */
   rc = libusb_control_transfer(devh, 0x21, 0x22, ACM_CTRL_DTR | ACM_CTRL_RTS, 0, NULL, 0, 0);
   if (rc < 0) {  /* should return 0 or higher */
-    USBERR(stderr, "[USBSID] Error configuring line state during control transfer: %d, %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+    USBERR(stderr, "[USBSID] Error configuring line state during control transfer: %d, %s: %s\r\n",
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     rc = -1;
     return rc;
   }
 
-  /* set line encoding here */  // NOTE: NOT USED FOR CDC
+  /* set line encoding here, required but not used for CDC */
   rc = libusb_control_transfer(devh, 0x21, 0x20, 0, 0, encoding, sizeof(encoding), 1000);
   if (rc < 0 || rc != 7) {  /* should return 7 for the encoding size */
-    USBERR(stderr, "[USBSID] Error configuring line encoding during control transfer: %d, %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+    USBERR(stderr, "[USBSID] Error configuring line encoding during control transfer: %d, %s: %s\r\n",
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     rc = -1;
     return rc;
   }
@@ -1327,7 +1494,6 @@ void USBSID_Class::LIBUSB_InitOutBuffer(void)
   out_buffer = libusb_dev_mem_alloc(devh, len_out_buffer);
   if (out_buffer == NULL) {
     USBDBG(stdout, "[USBSID] libusb_dev_mem_alloc failed on out_buffer, allocating with malloc\r\n");
-    // out_buffer = (uint8_t*)aligned_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * len_out_buffer);
     out_buffer = us_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * len_out_buffer);
   } else {
     out_buffer_dma = true;
@@ -1335,15 +1501,13 @@ void USBSID_Class::LIBUSB_InitOutBuffer(void)
   USBDBG(stdout, "[USBSID] Alloc out_buffer complete\r\n");
   transfer_out = libusb_alloc_transfer(0);
   USBDBG(stdout, "[USBSID] Alloc transfer_out complete\r\n");
-  libusb_fill_bulk_transfer(transfer_out, devh, EP_OUT_ADDR, out_buffer, len_out_buffer, usb_out, NULL, LIBUSB_TIMEOUT);
+  libusb_fill_bulk_transfer(transfer_out, devh, EP_OUT_ADDR, out_buffer, len_out_buffer, usb_out, this, LIBUSB_TIMEOUT);
   USBDBG(stdout, "[USBSID] libusb_fill_bulk_transfer transfer_out complete\r\n");
 
   if (thread_buffer == NULL) {
-    // thread_buffer = (uint8_t*)aligned_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * (len_out_buffer));
     thread_buffer = us_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * (len_out_buffer));
   }
   if (write_buffer == NULL) {
-    // write_buffer = (uint8_t*)aligned_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * (len_out_buffer));
     write_buffer = us_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * (len_out_buffer));
   }
   return;
@@ -1355,7 +1519,8 @@ void USBSID_Class::LIBUSB_FreeOutBuffer(void)
   if (out_buffer_dma) {
     rc = libusb_dev_mem_free(devh, out_buffer, len_out_buffer);
     if (rc < 0) {
-      USBERR(stderr, "[USBSID] Error, failed to free out_buffer DMA memory: %d, %s: %s\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+      USBERR(stderr, "[USBSID] Error, failed to free out_buffer DMA memory: %d, %s: %s\n",
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     }
   } else {
     if (out_buffer) us_free(out_buffer);
@@ -1400,7 +1565,7 @@ void USBSID_Class::LIBUSB_FreeInBuffer(void)
   if (in_buffer_dma) {
     rc = libusb_dev_mem_free(devh, in_buffer, LEN_IN_BUFFER);
     if (rc < 0) {
-      USBERR(stderr, "[USBSID] Error, failed to free in_buffer DMA memory: %d, %s: %s\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+      USBERR(stderr, "[USBSID] Error, failed to free in_buffer DMA memory: %d, %s: %s\n", rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     }
   } else {
     if (in_buffer) us_free(in_buffer);
@@ -1421,7 +1586,7 @@ void USBSID_Class::LIBUSB_StopTransfers(void)
     rc = libusb_cancel_transfer(transfer_out);
     if (rc < 0 && rc != LIBUSB_ERROR_NOT_FOUND) {
       USBERR(stderr, "[USBSID] Error cancel OUT %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     }
   }
 
@@ -1429,7 +1594,7 @@ void USBSID_Class::LIBUSB_StopTransfers(void)
     rc = libusb_cancel_transfer(transfer_in);
     if (rc < 0 && rc != LIBUSB_ERROR_NOT_FOUND) {
       USBERR(stderr, "[USBSID] Error cancel IN %d - %s: %s\n",
-        rc, libusb_error_name(rc), libusb_strerror(rc));
+        rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     }
   }
 
@@ -1455,15 +1620,14 @@ int USBSID_Class::LIBUSB_Setup(bool start_threaded, bool with_cycles)
   threaded = start_threaded;
   withcycles = with_cycles;
   len_out_buffer = LEN_OUT_BUFFER;
-  write_buffer = us_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * (len_out_buffer));
-  thread_buffer = us_alloc(2 * len_out_buffer, (sizeof(uint8_t)) * (len_out_buffer));
-  result = us_alloc(2 * LEN_IN_BUFFER, (sizeof(uint8_t)) * (LEN_IN_BUFFER));
 
   /* Initialize libusb */
   rc = libusb_init(&ctx);
-  // rc = libusb_init_context(&ctx, /*options=NULL, /*num_options=*/0);  // NOTE: REQUIRES LIBUSB 1.0.27!!
+  /* For LIBUSB version 1.0.27+ we could use this: */
+  // rc = libusb_init_context(&ctx, /*options=NULL, /*num_options=*/0);
   if (rc != 0) {
-    USBERR(stderr, "[USBSID] Error initializing libusb: %d %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+    USBERR(stderr, "[USBSID] Error initializing libusb: %d %s: %s\r\n",
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     goto out;
   }
 
@@ -1471,7 +1635,7 @@ int USBSID_Class::LIBUSB_Setup(bool start_threaded, bool with_cycles)
   libusb_set_option(ctx, LIBUSB_OPTION_LOG_LEVEL, 0);
 
   /* Check for an available USBSID-Pico */
-  if (LIBUSB_Available(ctx, VENDOR_ID, PRODUCT_ID) <= 0) {
+  if (LIBUSB_Available(VENDOR_ID, PRODUCT_ID) <= 0) {
     USBDBG(stderr, "[USBSID] USBSID-Pico not connected\n");
     goto out;
   }
@@ -1488,20 +1652,12 @@ int USBSID_Class::LIBUSB_Setup(bool start_threaded, bool with_cycles)
     goto out;
   }
 
-  #ifdef US_UNMUTE_ON_ENTRY
-  USBSID_UnMute();
-  #endif
-  #ifdef US_RESET_ON_ENTRY
-  USBSID_Reset();
-  #endif
-  #ifdef US_CLEARBUS_ON_ENTRY
-  USBSID_ClearBus();
-  #endif
   LIBUSB_InitOutBuffer();
   LIBUSB_InitInBuffer();
 
   if (rc < 0) {
-    USBERR(stderr, "[USBSID] Error, could not open device: %d, %s: %s\r\n", rc, libusb_error_name(rc), libusb_strerror(rc));
+    USBERR(stderr, "[USBSID] Error, could not open device: %d, %s: %s\r\n",
+      rc, libusb_error_name(rc), libusb_strerror((enum libusb_error)rc));
     goto out;
   }
 
@@ -1517,7 +1673,6 @@ out:
 
 int USBSID_Class::LIBUSB_Exit(void)
 {
-
   if (rc >= 0) {
     USBSID_StopThread();
     #ifdef US_MUTE_ON_EXIT
@@ -1536,7 +1691,7 @@ int USBSID_Class::LIBUSB_Exit(void)
   if (ctx) {
     libusb_exit(ctx);
   }
-    ctx = NULL;
+  ctx = NULL;
   rc = -1;
   devh = NULL;
   USBDBG(stdout, "[USBSID] Closed USB device\r\n");
@@ -1545,55 +1700,100 @@ int USBSID_Class::LIBUSB_Exit(void)
 
 void LIBUSB_CALL USBSID_Class::usb_out(struct libusb_transfer *transfer)
 {
+  USBSID_Class *self = (USBSID_Class *)transfer->user_data;
+
   if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
-    rc = transfer->status;
-    if (rc != LIBUSB_TRANSFER_CANCELLED) {
-      USBERR(stderr, "[USBSID] Warning: transfer out interrupted with status %d, %s: %s\r", rc, libusb_error_name(rc), libusb_strerror(rc));
+    if (self) self->rc = transfer->status;
+    if (transfer->status != LIBUSB_TRANSFER_CANCELLED) {
+      USBERR(stderr, "[USBSID] Warning: transfer out interrupted with status %d, %s: %s\r",
+        transfer->status, libusb_error_name(transfer->status), libusb_strerror((enum libusb_error)transfer->status));
     }
     libusb_free_transfer(transfer);
-    transfer_out = NULL;
+    if (self) {
+      self->transfer_out = NULL;
+      self->transfer_out_pending = false;
+    }
     return;
   }
 
-  if (transfer->actual_length != len_out_buffer) {
-    USBERR(stderr, "[USBSID] Sent data length %d is different from the defined buffer length: %d or actual length %d\r", transfer->length, len_out_buffer, transfer->actual_length);
+  if (self && transfer->actual_length != self->len_out_buffer) {
+    USBERR(stderr, "[USBSID] Sent data length %d is different from the defined buffer length: %d or actual length %d\r",
+      transfer->length, self->len_out_buffer, transfer->actual_length);
   }
-  // WARNING: Resubmit is shit for normal tunes but good for cycle exact digitunes, sigh...
-  // if (threaded) libusb_submit_transfer(transfer_out);  /* Resubmit queue when finished */
-  //libusb_free_transfer(transfer);
-  //transfer_out = NULL;
-  transfer_out_pending = false;
+  if (self) self->transfer_out_pending = false;
 }
 
 void LIBUSB_CALL USBSID_Class::usb_in(struct libusb_transfer *transfer)
 {
-    if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
-         rc = transfer->status;
+  USBSID_Class *self = (USBSID_Class *)transfer->user_data;
 
-         if (rc != LIBUSB_TRANSFER_CANCELLED) {
-             USBERR(stderr,
-                    "[USBSID] Warning: transfer in interrupted with status '%s'\r",
-                    libusb_error_name(rc));
-         }
+  if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
+    if (self) self->rc = transfer->status;
+    if (transfer->status != LIBUSB_TRANSFER_CANCELLED) {
+      USBERR(stderr, "[USBSID] Warning: transfer in interrupted with status '%s'\r",
+        libusb_error_name(transfer->status));
+    }
+    libusb_free_transfer(transfer);
+    if (self) self->transfer_in = NULL;
+    return;
+  }
 
-         libusb_free_transfer(transfer);
-         transfer_in = NULL;
-         return;
-     }
+  if (self && transfer->actual_length > 0) {
+    memcpy(self->result, self->in_buffer, 1);
+  }
 
-     if (transfer->actual_length > 0) {
-         memcpy(result, in_buffer, 1);
-     }
-
-     if (transfer->user_data) {
-         *(int *)transfer->user_data = 1;
-     }
-
-    read_completed = 1;
-    transfer_in_pending = false;
-    //libusb_free_transfer(transfer);
-    //transfer_in = NULL;
+  if (self) {
+    self->read_completed = 1;
+    self->transfer_in_pending = false;
+  }
 }
 
-
 } /* extern "C" */
+
+
+std::vector<USBSID_DeviceInfo> USBSID_NS::USBSID_EnumerateDevices(void)
+{
+  std::vector<USBSID_DeviceInfo> found;
+
+  libusb_context *enum_ctx = NULL;
+  if (libusb_init(&enum_ctx) != 0) return found;
+  libusb_set_option(enum_ctx, LIBUSB_OPTION_LOG_LEVEL, 0);
+
+  struct libusb_device **devs;
+  ssize_t cnt = libusb_get_device_list(enum_ctx, &devs);
+  if (cnt < 0) {
+    libusb_exit(enum_ctx);
+    return found;
+  }
+
+  for (ssize_t i = 0; i < cnt; i++) {
+    struct libusb_device_descriptor desc;
+    if (libusb_get_device_descriptor(devs[i], &desc) < 0) continue;
+    if (desc.idVendor != VENDOR_ID || desc.idProduct != PRODUCT_ID) continue;
+
+    USBSID_DeviceInfo info;
+    info.bus = libusb_get_bus_number(devs[i]);
+    info.port_path = us_port_path(devs[i]);
+
+    if (desc.iSerialNumber) {
+      struct libusb_device_handle *h = NULL;
+      if (libusb_open(devs[i], &h) == 0) {
+        unsigned char sbuf[64] = {0};
+        int slen = libusb_get_string_descriptor_ascii(h, desc.iSerialNumber, sbuf, sizeof(sbuf) - 1);
+        if (slen > 0) info.serial.assign((char*)sbuf, slen);
+        libusb_close(h);
+      }
+    }
+
+    found.push_back(info);
+  }
+
+  libusb_free_device_list(devs, 1);
+  libusb_exit(enum_ctx);
+
+  std::sort(found.begin(), found.end(), [](const USBSID_DeviceInfo &a, const USBSID_DeviceInfo &b) {
+    return us_port_less(a.bus, a.port_path, b.bus, b.port_path);
+  });
+
+  return found;
+}
