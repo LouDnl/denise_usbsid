@@ -32,7 +32,7 @@ struct VideoBaseLayout : GUIKIT::VerticalLayout {
         struct Option : GUIKIT::HorizontalLayout {
             GUIKIT::CheckBox newLuma;
             GUIKIT::CheckBox linearInterpolation;
-            GUIKIT::CheckBox audioInterference;
+            GUIKIT::Button audioInterference;
             GUIKIT::CheckBox legacyCRTonCPU;
             GUIKIT::Button legacyParams;
             GUIKIT::Widget spacer;
@@ -125,6 +125,16 @@ struct SCVideoWindow : GUIKIT::Window {
     auto translate() -> void;
 
     SCVideoWindow(PresentationLayout* presentation);
+};
+
+struct AudioInterferenceWindow : GUIKIT::Window {
+    PresentationLayout* presentation;
+    SliderLayout sliderLayout;
+
+    auto build() -> void;
+    auto loadSettings() -> void;
+
+    AudioInterferenceWindow(PresentationLayout* presentation);
 };
 
 struct VideoFavLayout : GUIKIT::FramedVerticalLayout {
@@ -474,6 +484,7 @@ struct PresentationLayout : GUIKIT::HorizontalLayout {
     std::vector<std::pair<unsigned, unsigned>> params;
     ParamEditor* paramEditor = nullptr;
     SCVideoWindow* scVideoWindow = nullptr;
+    AudioInterferenceWindow* audioInterferenceWindow = nullptr;
     	
     auto translate() -> void;
     auto updatePresets(bool reloadDriver, bool reloadPreset) -> void;

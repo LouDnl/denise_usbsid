@@ -170,16 +170,32 @@ auto AudioManager::setInterference() -> void {
 
     LumaInterference& ali = lumaInterference;
     ali.enabled = false;
+
     if (dynamic_cast<LIBC64::Interface*>(activeEmulator)) {
         auto settings = Program::getSettings(activeEmulator);
         ali.enabled = settings->get<bool>("video_audio_interference", false);
     }
+    updateInterference();
 
+    ali.update = false;
     ali.lines = 0;
     ali.linePos = 0;
     ali.lineDiff = 0;
     ali.noiseDiff = 0;
     ali.noisePos = 0;
+}
+
+auto AudioManager::updateInterference() -> void {
+    if (!activeEmulator)
+        return;
+
+    LumaInterference& ali = lumaInterference;
+    ali.vol = 0.0f;
+
+    if (dynamic_cast<LIBC64::Interface*>(activeEmulator)) {
+        auto settings = Program::getSettings(activeEmulator);
+        ali.vol = (float)settings->get<unsigned>("video_audio_interference_vol", 20, {0, 100}) / 4.0f;
+    }
 }
 
 auto AudioManager::setTapeNoise( ) -> void {
@@ -498,14 +514,20 @@ auto AudioManager::applyInterference() -> void {
         2.0f, 1.0f, 2.0f, 3.0f
     };
 
+    if (ali.update) {
+        ali.update = false;
+        updateInterference();
+    }
+
     if (ali.lines) {
         auto _noiseFreq = static_cast<unsigned>((float) stat.cyclesPerLine * 0.19f);
+        float _adjust = volumeAdjust * ali.vol;
 
         for (unsigned s = 0; s < bufferSize; s++) {
             sample = buffer[s];
 
-            sample += (ali.avgLines[ali.linePos] * 1.0f) * volumeAdjust;
-            sample += ((whiteNoise[ali.noisePos] * ali.avgFrame * 0.6f) ) * volumeAdjust;
+            sample += (ali.avgLines[ali.linePos] * 1.0f) * _adjust;
+            sample += ((whiteNoise[ali.noisePos] * ali.avgFrame * 0.6f) ) * _adjust;
 
             ali.lineDiff += static_cast<unsigned>(stat.sampleIntervall);
             if (ali.lineDiff >= stat.cyclesPerLine  ) {
