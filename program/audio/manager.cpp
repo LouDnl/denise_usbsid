@@ -194,7 +194,7 @@ auto AudioManager::updateInterference() -> void {
 
     if (dynamic_cast<LIBC64::Interface*>(activeEmulator)) {
         auto settings = Program::getSettings(activeEmulator);
-        ali.vol = (float)settings->get<unsigned>("video_audio_interference_vol", 20, {0, 100}) / 4.0f;
+        ali.vol = (float)settings->get<unsigned>("video_audio_interference_vol", 20, {0, 100}) / 2.0f;
     }
 }
 
