@@ -194,6 +194,15 @@ main(dynamic_cast<LIBC64::Interface*>(presentation->tabWindow->emulator)),
 presentation(presentation) {
 }
 
+AudioInterferenceWindow::AudioInterferenceWindow(PresentationLayout* presentation) :
+sliderLayout( "%", SliderLayout::ACTIVATOR | SliderLayout::SPACER ),
+presentation(presentation) {
+    sliderLayout.setMargin( 10 );
+    sliderLayout.slider.setLength( 101 );
+    sliderLayout.updateValueWidth( "100 %" );
+    append( sliderLayout );
+}
+
 VideoFavLayout::Control::Control() {
     append(remove,{0u, 0u});
     append(spacer,{~0u, 0u});
@@ -854,11 +863,13 @@ layScreenShot(dynamic_cast<LIBC64::Interface*>(tabWindow->emulator)) {
         emuThread->unlock();
     };
 
-    layBase.view.option.audioInterference.onToggle = [this](bool checked) {
-        _settings->set<bool>("video_audio_interference", checked );
-        emuThread->lock();
-        audioManager->setInterference();
-        emuThread->unlock();
+    layBase.view.option.audioInterference.onActivate = [this]() {
+        if (!audioInterferenceWindow) {
+            audioInterferenceWindow = new AudioInterferenceWindow(this);
+            audioInterferenceWindow->build();
+        }
+        audioInterferenceWindow->setVisible();
+        audioInterferenceWindow->setFocused();
     };
 
     layBase.view.mode.trOn.onActivate = [this]() {
@@ -2310,7 +2321,9 @@ auto PresentationLayout::loadSettings(bool init) -> void {
     updatePresets(!init, true);
 
     layBase.view.option.linearInterpolation.setChecked( _settings->get<bool>("video_filter", true) );
-    layBase.view.option.audioInterference.setChecked( _settings->get<bool>("video_audio_interference", false) );
+
+    if (audioInterferenceWindow)
+        audioInterferenceWindow->loadSettings();
 
     unsigned tr = _settings->get<unsigned>("threaded_renderer", 0);
     switch(tr) {
@@ -2914,6 +2927,37 @@ auto PresentationLayout::setModuls() -> void {
     moduleTree.append(tviScreenShot);
     moduleTree.append(tviMotion);
     moduleTree.append(tviRewind);
+}
+
+auto AudioInterferenceWindow::build() -> void {
+    setTitle( trans->getA("Audio Luma Interference") );
+
+    MiscHelper::centerGeometry( this, {350u, 100u}, presentation->tabWindow->geometry() );
+
+    sliderLayout.active.onToggle = [this](bool checked) {
+        presentation->tabWindow->settings->set<bool>("video_audio_interference", checked );
+        sliderLayout.updateEnabledByActivator();
+        emuThread->lock();
+        audioManager->setInterference();
+        emuThread->unlock();
+    };
+
+    sliderLayout.slider.onChange = [this](unsigned position) {
+        presentation->tabWindow->settings->set<unsigned>("video_audio_interference_vol", position );
+        sliderLayout.setValue( std::to_string( position ) );
+        audioManager->lumaInterference.update = true;
+    };
+
+    loadSettings();
+}
+
+auto AudioInterferenceWindow::loadSettings() -> void {
+    auto& settings = presentation->tabWindow->settings;
+    sliderLayout.active.setChecked( settings->get<bool>("video_audio_interference", false) );
+    auto position = settings->get<unsigned>("video_audio_interference_vol", 20, {0, 100});
+    sliderLayout.slider.setPosition( position );
+    sliderLayout.setValue( std::to_string( position ) );
+    sliderLayout.updateEnabledByActivator();
 }
 
 auto SCVideoWindow::build() -> void {

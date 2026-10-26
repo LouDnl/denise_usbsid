@@ -70,9 +70,11 @@ struct AudioManager {
 
     struct LumaInterference {
         bool enabled = false;
+        bool update = false;
 
         float avgFrame;
         float avgLines[313] = {};
+        float vol = 0.0f;
         unsigned lines;
 
         unsigned linePos;
@@ -104,6 +106,7 @@ struct AudioManager {
     auto setSynchronize() -> void;
     auto setVolume() -> void;
     auto setInterference() -> void;
+    auto updateInterference() -> void;
     auto setRateControl() -> void;
     auto resetDriveSounds() -> void;
     auto setDriveSounds(bool init = true) -> void;

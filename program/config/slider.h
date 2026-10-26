@@ -66,6 +66,11 @@ struct SliderLayout : GUIKIT::HorizontalLayout {
         
         update( value, {test.minimumSize().width, 0u}, 8 );
     }
+
+    auto updateEnabledByActivator() -> void {
+        slider.setEnabled( active.checked() );
+        value.setEnabled( active.checked() );
+    }
     
     static auto scale( std::vector<SliderLayout*> sliders, std::string maxValue, unsigned neededWidth = 0) -> unsigned {
 
